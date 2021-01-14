@@ -465,14 +465,23 @@ let create ?cache_dir ?build_dir ?verbose ?optimizations ?threads ~clock_names c
         fun () -> fn value_ref.contents)
     in
     let clocks =
+      let in_ports = String.Map.of_alist_exn in_ports in
       List.filter_map clock_names ~f:(fun name ->
-        List.find handle.input_setters ~f:(fun (a, _) -> String.equal a name)
-        |> Option.map ~f:snd)
+        let%map.Option setter =
+          List.find handle.input_setters ~f:(fun (a, _) -> String.equal a name)
+        in
+        let setter = snd setter in
+        let width = Bits.width !(Map.find_exn in_ports name) in
+        let gnd = Bits.zero width in
+        let vdd = Bits.ones width in
+        function
+        | `Gnd -> setter gnd
+        | `Vdd -> setter vdd)
     in
     let cycle_at_clock_edge () =
-      List.iter clocks ~f:(fun f -> f Bits.gnd);
+      List.iter clocks ~f:(fun f -> f `Gnd);
       handle.eval ();
-      List.iter clocks ~f:(fun f -> f Bits.vdd);
+      List.iter clocks ~f:(fun f -> f `Vdd);
       handle.eval ()
     in
     let cycle_before_clock_edge =
