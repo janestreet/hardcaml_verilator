@@ -1,6 +1,7 @@
 open Core
 open Hardcaml
 open Signal
+module Unix = Core_unix
 
 let set_input (handle : Hardcaml_verilator.t) name =
   snd (List.find_exn ~f:(fun (a, _) -> String.equal name a) handle.input_setters)
@@ -130,7 +131,7 @@ let%expect_test "cyclesim with interface" =
     }
   in
   let module Sim = Hardcaml_verilator.With_interface (I) (O) in
-  let cache_dir = Filename.temp_dir "" "" in
+  let cache_dir = Filename_unix.temp_dir "" "" in
   let sim =
     Sim.create ~cache_dir ~threads:`Non_thread_safe ~clock_names:[ "clock" ] create
   in
@@ -150,7 +151,7 @@ let%expect_test "cyclesim with interface" =
   [%expect {| ((hello_before 0) (world_before 5) (hello_after 1) (world_after 5)) |}];
   (match Unix.system (sprintf "ls %s" cache_dir) with
    | Ok () -> ()
-   | Error e -> raise_s [%message (e : Core.Unix.Exit_or_signal.error)]);
+   | Error e -> raise_s [%message (e : Core_unix.Exit_or_signal.error)]);
   [%expect
     {| cf6c2ce492346d42c55a7fa7fcf78dd2-optimizations-none-threads-some-non-thread-safe.so |}]
 ;;

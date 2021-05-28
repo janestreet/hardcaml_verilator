@@ -3,6 +3,7 @@ open Hardcaml
 open Ctypes
 open Ctypes_foreign_threaded_flat
 open Foreign
+module Unix = Core_unix
 
 module Simulation_backend = struct
   type t =
@@ -280,7 +281,7 @@ let compile_circuit
   let circuit_name = Circuit.name circuit in
   let build_dir =
     match build_dir with
-    | None -> Filename.temp_dir circuit_name ""
+    | None -> Filename_unix.temp_dir circuit_name ""
     | Some x -> x
   in
   let obj_dir = build_dir ^/ "obj_dir" in
