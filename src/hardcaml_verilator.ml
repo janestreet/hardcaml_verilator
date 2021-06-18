@@ -398,7 +398,7 @@ let compile_circuit_with_cache
         cache_dir ^/ Md5_lib.to_hex md5 ^ "-" ^ suffix ^ ".so"
       in
       run_command_exn ?verbose (sprintf "mkdir -p %s" cache_dir);
-      if Sys.file_exists_exn fname
+      if Sys_unix.file_exists_exn fname
       then fname
       else (
         let compiled = compile_circuit () in
