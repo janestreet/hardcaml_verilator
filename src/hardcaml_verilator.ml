@@ -168,34 +168,46 @@ external caml_bigstring_get16 : Bigstring.t -> int -> int = "%caml_bigstring_get
 external caml_bigstring_get32 : Bigstring.t -> int -> int32 = "%caml_bigstring_get32u"
 external caml_bigstring_get64 : Bigstring.t -> int -> int64 = "%caml_bigstring_get64u"
 
+let bytes_offset_for_data = Bits.Expert.offset_for_data
+
 let copy_from_bytes_to_bigstring ~bit_width ~dst =
   if bit_width <= 8
-  then fun src -> caml_bigstring_set8 dst 0 (Bytes.unsafe_get src 0)
+  then fun src -> caml_bigstring_set8 dst 0 (Bytes.unsafe_get src bytes_offset_for_data)
   else if bit_width <= 16
-  then fun src -> caml_bigstring_set16 dst 0 (caml_bytes_get16 src 0)
+  then fun src -> caml_bigstring_set16 dst 0 (caml_bytes_get16 src bytes_offset_for_data)
   else if bit_width <= 32
-  then fun src -> caml_bigstring_set32 dst 0 (caml_bytes_get32 src 0)
+  then fun src -> caml_bigstring_set32 dst 0 (caml_bytes_get32 src bytes_offset_for_data)
   else if bit_width <= 64
-  then fun src -> caml_bigstring_set64 dst 0 (caml_bytes_get64 src 0)
+  then fun src -> caml_bigstring_set64 dst 0 (caml_bytes_get64 src bytes_offset_for_data)
   else (
     let num_bytes = ceil_div bit_width 8 in
     fun src ->
-      Bigstring.From_bytes.unsafe_blit ~src ~src_pos:0 ~dst ~dst_pos:0 ~len:num_bytes)
+      Bigstring.From_bytes.unsafe_blit
+        ~src
+        ~src_pos:bytes_offset_for_data
+        ~dst
+        ~dst_pos:0
+        ~len:num_bytes)
 ;;
 
 let copy_to_bytes_from_bigstring ~bit_width ~src =
   if bit_width <= 8
-  then fun dst -> Bytes.unsafe_set dst 0 (caml_bigstring_get8 src 0)
+  then fun dst -> Bytes.unsafe_set dst bytes_offset_for_data (caml_bigstring_get8 src 0)
   else if bit_width <= 16
-  then fun dst -> caml_bytes_set16 dst 0 (caml_bigstring_get16 src 0)
+  then fun dst -> caml_bytes_set16 dst bytes_offset_for_data (caml_bigstring_get16 src 0)
   else if bit_width <= 32
-  then fun dst -> caml_bytes_set32 dst 0 (caml_bigstring_get32 src 0)
+  then fun dst -> caml_bytes_set32 dst bytes_offset_for_data (caml_bigstring_get32 src 0)
   else if bit_width <= 64
-  then fun dst -> caml_bytes_set64 dst 0 (caml_bigstring_get64 src 0)
+  then fun dst -> caml_bytes_set64 dst bytes_offset_for_data (caml_bigstring_get64 src 0)
   else (
     let num_bytes = ceil_div bit_width 8 in
     fun dst ->
-      Bigstring.To_bytes.unsafe_blit ~src ~src_pos:0 ~dst ~dst_pos:0 ~len:num_bytes)
+      Bigstring.To_bytes.unsafe_blit
+        ~src
+        ~src_pos:0
+        ~dst
+        ~dst_pos:bytes_offset_for_data
+        ~len:num_bytes)
 ;;
 
 let create_foreign_bindings ?from (circuit : Circuit.t) =
@@ -223,7 +235,7 @@ let create_foreign_bindings ?from (circuit : Circuit.t) =
       ( port_name
       , fun bits ->
         assert (Bits.width bits = Signal.width input);
-        copy_into_verilator (Bits.Unsafe.data bits) ))
+        copy_into_verilator (Bits.Expert.unsafe_underlying_repr bits) ))
   in
   let output_getters =
     List.map (Circuit.outputs circuit) ~f:(fun output ->
@@ -245,7 +257,7 @@ let create_foreign_bindings ?from (circuit : Circuit.t) =
       ( port_name
       , fun () ->
         let bits = Bits.of_int 0 ~width:bit_width in
-        copy_from_verilator (Bits.Unsafe.data bits);
+        copy_from_verilator (Bits.Expert.unsafe_underlying_repr bits);
         bits ))
   in
   let complete =
