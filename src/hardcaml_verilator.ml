@@ -1,7 +1,7 @@
 open Core
 open Hardcaml
 open Ctypes
-open Ctypes_foreign_threaded_flat
+open Ctypes_foreign_flat
 open Foreign
 module Unix = Core_unix
 
