@@ -36,7 +36,7 @@ let%expect_test "sequential" =
       let clock = input "clock" 1 in
       let clear = input "clear" 1 in
       let reg_spec = Reg_spec.create ~clock ~clear () in
-      reg_fb reg_spec ~w:8 ~enable:vdd (fun a -> a +:. 1) |> output "value"
+      reg_fb reg_spec ~width:8 ~f:(fun a -> a +:. 1) |> output "value"
     in
     Circuit.create_exn ~name:"counter" [ counter_output ]
   in
@@ -125,8 +125,7 @@ let%expect_test "cyclesim with interface" =
   end
   in
   let create (i : _ I.t) =
-    { O.hello =
-        reg_fb ~enable:vdd ~w:16 (Reg_spec.create ~clock:i.clock ()) (fun x -> x +:. 1)
+    { O.hello = reg_fb ~width:16 (Reg_spec.create ~clock:i.clock ()) ~f:(fun x -> x +:. 1)
     ; world = (i.foo +: uresize i.bar 16 +: Signal.(i.bar.:[45, 30]))
     }
   in
