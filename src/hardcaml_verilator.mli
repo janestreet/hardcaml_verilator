@@ -30,6 +30,7 @@ end
 type t =
   { input_setters : (string * (Bits.t -> unit)) list
   ; output_getters : (string * (unit -> Bits.t)) list
+  ; internal_getters : (string * (unit -> Bits.t)) list
   ; eval : unit -> unit
   ; complete : unit -> unit
   }
@@ -48,6 +49,7 @@ type 'a with_options =
   -> ?verbose:bool
   -> ?optimizations:bool
   -> ?threads:[ `Non_thread_safe | `With_threads of int ]
+  -> ?config:Cyclesim.Config.t
   -> 'a
 
 val compile_circuit_and_load_shared_object : (Circuit.t -> t) with_options
