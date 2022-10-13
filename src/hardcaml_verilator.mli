@@ -18,10 +18,18 @@
 *)
 open Hardcaml
 
+module Cache : sig
+  type t =
+    | No_cache
+    | Hashed of { cache_dir : string }
+    | Explicit of { file_name : string }
+  [@@deriving sexp, bin_io]
+end
+
 module Simulation_backend : sig
   type t =
     | Hardcaml
-    | Verilator of { cache_dir : string option }
+    | Verilator of Cache.t
   [@@deriving sexp, bin_io]
 
   val flag : t Core.Command.Param.t
@@ -44,7 +52,7 @@ type t =
       compilation for repeated simulation runs.
 *)
 type 'a with_options =
-  ?cache_dir:string
+  ?cache:Cache.t
   -> ?build_dir:string
   -> ?verbose:bool
   -> ?optimizations:bool
@@ -62,4 +70,8 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) : si
        -> (Signal.t I.t -> Signal.t O.t)
        -> (Bits.t ref I.t, Bits.t ref O.t) Cyclesim.t)
         with_options
+
+  (** Compiles a circuit and returns the shared object which can later be passed as the
+      [file_name] with Cache.Explicit to the [cache] input. *)
+  val create_shared_object : ((Signal.t I.t -> Signal.t O.t) -> string) with_options
 end

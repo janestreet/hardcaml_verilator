@@ -132,7 +132,11 @@ let%expect_test "cyclesim with interface" =
   let module Sim = Hardcaml_verilator.With_interface (I) (O) in
   let cache_dir = Filename_unix.temp_dir "" "" in
   let sim =
-    Sim.create ~cache_dir ~threads:`Non_thread_safe ~clock_names:[ "clock" ] create
+    Sim.create
+      ~cache:(Hashed { cache_dir })
+      ~threads:`Non_thread_safe
+      ~clock_names:[ "clock" ]
+      create
   in
   let inputs = Cyclesim.inputs sim in
   let outputs_before = Cyclesim.outputs ~clock_edge:Before sim in
