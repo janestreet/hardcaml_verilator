@@ -429,7 +429,7 @@ let compile_circuit
       verilog_name_by_id
       ()
   =
-  let ( ^/ ) = Caml.Filename.concat in
+  let ( ^/ ) = Stdlib.Filename.concat in
   let circuit_name = Circuit.name circuit in
   let build_dir =
     match build_dir with
