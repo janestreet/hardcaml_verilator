@@ -632,8 +632,7 @@ let create
         match s with
         | Multiport_mem _ | Mem _ -> None
         | _ ->
-          Some
-            (List.map names ~f:(fun n -> n, ref (Bits.of_int ~width:(Signal.width s) 0))))
+          Some (List.map names ~f:(fun n -> n, ref (Bits.of_int ~width:(Signal.width s) 0))))
     |> List.concat
   in
   let internal_memories =
@@ -644,9 +643,7 @@ let create
         | Multiport_mem { size; _ } | Mem { memory = { mem_size = size; _ }; _ } ->
           Some
             (List.map names ~f:(fun n ->
-               ( n
-               , Array.init size ~f:(fun _ ->
-                   ref (Bits.of_int ~width:(Signal.width s) 0)) )))
+               n, Array.init size ~f:(fun _ -> ref (Bits.of_int ~width:(Signal.width s) 0))))
         | _ -> None)
     |> List.concat
   in
@@ -657,9 +654,7 @@ let create
   in
   let make_read_memories memory_ports getters : (unit -> unit) list =
     List.map memory_ports ~f:(fun (name, value_ref_array) ->
-      let fn =
-        getters |> List.find_exn ~f:(fun a -> String.equal (fst a) name) |> snd
-      in
+      let fn = getters |> List.find_exn ~f:(fun a -> String.equal (fst a) name) |> snd in
       fun () ->
         let value = fn () in
         let width = round_up_size (Bits.width !(value_ref_array.(0))) in
@@ -845,11 +840,11 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
          circuit)
       ~to_input:
         (ignore_missing_fields
-           (I.to_list I.t)
+           (I.to_list I.port_names_and_widths)
            ~of_alist:I.Unsafe_assoc_by_port_name.of_alist)
       ~to_output:
         (ignore_missing_fields
-           (O.to_list O.t)
+           (O.to_list O.port_names_and_widths)
            ~of_alist:O.Unsafe_assoc_by_port_name.of_alist)
   ;;
 end
