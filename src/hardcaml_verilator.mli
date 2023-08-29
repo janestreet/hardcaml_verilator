@@ -45,17 +45,24 @@ type t =
 
 (** Arguments when creating a verilator simulation object.
 
-    - [build_dir] specifies the directory. Defaults to somewhere in /tmp
-    - [cache_dir] specifies a location to store compiled shared libraries. When [cache_dir]
-      is set, the [create] functions below first tries to check if an existing compilation
-      for the current circuit exists in the specified [cache_dir]. This can speed up
-      compilation for repeated simulation runs.
+    - [cache] specifies whether and where to store compiled shared libraries. When set to
+      a directory, the [create] functions below first tries to check if an existing
+      compilation for the current circuit exists in the specified directory. When set to a
+      file, the file is used directly as the shared library. This can speed up compilation
+      for repeated simulation runs.
+    - [build_dir] specifies the build directory. Defaults to somewhere in /tmp.
+    - [optimizations] specifies whether verilator optimizations should be turned on.
+    - [parallel_compile] specifies whether the verilator simulation object should be
+      compiled in parallel, and if so with how many parallel jobs.
+    - [threads] speficies whether the verilator simulation object should be generated to
+      be run in parallel, and if so with how many parallel threads.
 *)
 type 'a with_options =
   ?cache:Cache.t
   -> ?build_dir:string
   -> ?verbose:bool
   -> ?optimizations:bool
+  -> ?parallel_compile:[ `Single_threaded | `Parallel of int ]
   -> ?threads:[ `Non_thread_safe | `With_threads of int ]
   -> ?config:Cyclesim.Config.t
   -> 'a

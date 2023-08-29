@@ -74,6 +74,7 @@ type 'a with_options =
   -> ?build_dir:string
   -> ?verbose:bool
   -> ?optimizations:bool
+  -> ?parallel_compile:[ `Single_threaded | `Parallel of int ]
   -> ?threads:[ `Non_thread_safe | `With_threads of int ]
   -> ?config:Cyclesim.Config.t
   -> 'a
@@ -133,6 +134,7 @@ let internal_signals
 let[@inline always] ceil_div a b = if a % b = 0 then a / b else (a / b) + 1
 
 let run_command_exn ?(verbose = false) command =
+  if verbose then print_endline command;
   let x = if verbose then command else command ^ " &>/dev/null" in
   match Unix.system x with
   | Ok () -> ()
@@ -422,6 +424,7 @@ let compile_circuit
       ?build_dir
       ?(verbose = false)
       ?(optimizations = true)
+      ?(parallel_compile = `Single_threaded)
       ?(threads = `Non_thread_safe)
       ~config
       ~verilog_contents
@@ -460,29 +463,41 @@ let compile_circuit
     | `With_threads _ -> base @ [ "verilated_threads.o" ]
   in
   let optimizations_flag = if optimizations then "-O3" else "-O0" in
-  let flags =
+  let verilator_flags =
     let threads =
       match threads with
       | `Non_thread_safe -> "--no-threads"
       | `With_threads x -> "--threads " ^ Int.to_string x
     in
     let top_module = "--top-module " ^ Circuit.name circuit in
-    String.concat ~sep:" " [ optimizations_flag; threads; top_module ]
+    let output_split =
+      match parallel_compile with
+      | `Single_threaded -> ""
+      | `Parallel _ -> "--output-split 20000"
+    in
+    String.concat ~sep:" " [ optimizations_flag; threads; top_module; output_split ]
+  in
+  let make_env_vars, make_parallel_flag =
+    match parallel_compile with
+    | `Single_threaded -> "", ""
+    | `Parallel jobs -> "VM_PARALLEL_BUILDS=1", sprintf "-j%i" jobs
   in
   run_command_exn
     ~verbose
     (sprintf
        "CXXFLAGS=\"-fPIC\" verilator %s -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED --cc %s \
         --Mdir %s %s"
-       flags
+       verilator_flags
        path_to_verilog
        obj_dir
        path_to_cpp_wrapper);
   run_command_exn
     ~verbose
     (sprintf
-       "CXXFLAGS=\"-fPIC -g %s\" make -C %s -f V%s.mk V%s__ALL.a %s"
+       "CXXFLAGS=\"-fPIC -g %s\" %s make %s -C %s -f V%s.mk V%s__ALL.a %s"
        optimizations_flag
+       make_env_vars
+       make_parallel_flag
        obj_dir
        (Circuit.name circuit)
        (Circuit.name circuit)
@@ -505,6 +520,7 @@ let compile_circuit_with_cache
       ?build_dir
       ?verbose
       ?optimizations
+      ?parallel_compile
       ?threads
       ~config
       circuit
@@ -529,6 +545,7 @@ let compile_circuit_with_cache
         ?build_dir
         ?verbose
         ?optimizations
+        ?parallel_compile
         ?threads
         ~config
         ~circuit
@@ -583,6 +600,7 @@ let compile_circuit_and_load_shared_object
       ?build_dir
       ?verbose
       ?optimizations
+      ?parallel_compile
       ?threads
       ?(config = Cyclesim.Config.default)
       circuit
@@ -593,6 +611,7 @@ let compile_circuit_and_load_shared_object
       ?build_dir
       ?verbose
       ?optimizations
+      ?parallel_compile
       ?threads
       ~config
       circuit
@@ -605,6 +624,7 @@ let create
       ?build_dir
       ?verbose
       ?optimizations
+      ?parallel_compile
       ?threads
       ?(config = Cyclesim.Config.default)
       ~clock_names
@@ -616,6 +636,7 @@ let create
       ?build_dir
       ?verbose
       ?optimizations
+      ?parallel_compile
       ?threads
       ~config
       circuit
@@ -792,6 +813,7 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
         ?build_dir
         ?verbose
         ?optimizations
+        ?parallel_compile
         ?threads
         ?(config = Cyclesim.Config.default)
         create_fn
@@ -803,6 +825,7 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
         ?build_dir
         ?verbose
         ?optimizations
+        ?parallel_compile
         ?threads
         ~config
         circuit
@@ -815,6 +838,7 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
         ?build_dir
         ?verbose
         ?optimizations
+        ?parallel_compile
         ?threads
         ?config
         ~clock_names
@@ -834,6 +858,7 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
          ?build_dir
          ?verbose
          ?optimizations
+         ?parallel_compile
          ?threads
          ?config
          ~clock_names
