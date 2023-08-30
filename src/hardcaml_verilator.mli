@@ -70,13 +70,12 @@ type 'a with_options =
 val compile_circuit_and_load_shared_object : (Circuit.t -> t) with_options
 val create : (clock_names:string list -> Circuit.t -> Cyclesim.t_port_list) with_options
 
-
 module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) : sig
   val create
     : (clock_names:string list
        -> (Signal.t I.t -> Signal.t O.t)
        -> (Bits.t ref I.t, Bits.t ref O.t) Cyclesim.t)
-        with_options
+      with_options
 
   (** Compiles a circuit and returns the shared object which can later be passed as the
       [file_name] with Cache.Explicit to the [cache] input. *)

@@ -101,9 +101,9 @@ let output_addr_fn_name ~circuit_name ~port_name =
 ;;
 
 let internal_signals
-      ?(verilog_name_by_id : Rtl.signals_name_map_t option)
-      circuit
-      (config : Cyclesim.Config.t)
+  ?(verilog_name_by_id : Rtl.signals_name_map_t option)
+  circuit
+  (config : Cyclesim.Config.t)
   =
   match config.is_internal_port with
   | None -> []
@@ -116,19 +116,19 @@ let internal_signals
     in
     Signal_graph.filter (Circuit.signal_graph circuit) ~f:is_internal
     |> List.filter_map ~f:(fun signal ->
-      match Signal.names signal with
-      | [] -> None (* only use named internal signals *)
-      | names ->
-        let uid = Signal.uid signal in
-        let names =
-          match verilog_name_by_id with
-          | None -> names
-          | Some verilog_name_by_id ->
-            List.mapi names ~f:(fun idx _ ->
-              let lookup = uid, idx in
-              Map.find_exn verilog_name_by_id lookup)
-        in
-        Some (signal, names))
+         match Signal.names signal with
+         | [] -> None (* only use named internal signals *)
+         | names ->
+           let uid = Signal.uid signal in
+           let names =
+             match verilog_name_by_id with
+             | None -> names
+             | Some verilog_name_by_id ->
+               List.mapi names ~f:(fun idx _ ->
+                 let lookup = uid, idx in
+                 Map.find_exn verilog_name_by_id lookup)
+           in
+           Some (signal, names))
 ;;
 
 let[@inline always] ceil_div a b = if a % b = 0 then a / b else (a / b) + 1
@@ -144,10 +144,10 @@ let run_command_exn ?(verbose = false) command =
 ;;
 
 let generate_cpp_wrapper
-      buffer
-      (circuit : Circuit.t)
-      (config : Cyclesim.Config.t)
-      (verilog_name_by_id : Rtl.signals_name_map_t)
+  buffer
+  (circuit : Circuit.t)
+  (config : Cyclesim.Config.t)
+  (verilog_name_by_id : Rtl.signals_name_map_t)
   =
   let circuit_name = Circuit.name circuit in
   let typ = "V" ^ circuit_name in
@@ -308,10 +308,10 @@ let round_up_size i =
 ;;
 
 let create_foreign_bindings
-      ?from
-      (config : Cyclesim.Config.t)
-      (circuit : Circuit.t)
-      (verilog_name_by_id : Rtl.signals_name_map_t)
+  ?from
+  (config : Cyclesim.Config.t)
+  (circuit : Circuit.t)
+  (verilog_name_by_id : Rtl.signals_name_map_t)
   =
   let circuit_name = Circuit.name circuit in
   let verilator_ptr =
@@ -336,8 +336,8 @@ let create_foreign_bindings
       in
       ( port_name
       , fun bits ->
-        assert (Bits.width bits = Signal.width input);
-        copy_into_verilator (Bits.Expert.unsafe_underlying_repr bits) ))
+          assert (Bits.width bits = Signal.width input);
+          copy_into_verilator (Bits.Expert.unsafe_underlying_repr bits) ))
   in
   let get_getters ?alias_name bit_width ~port_name =
     let size = ceil_div bit_width 8 in
@@ -360,9 +360,9 @@ let create_foreign_bindings
     in
     ( name
     , fun () ->
-      let bits = Bits.of_int 0 ~width:bit_width in
-      copy_from_verilator (Bits.Expert.unsafe_underlying_repr bits);
-      bits )
+        let bits = Bits.of_int 0 ~width:bit_width in
+        copy_from_verilator (Bits.Expert.unsafe_underlying_repr bits);
+        bits )
   in
   let output_getters =
     List.map (Circuit.outputs circuit) ~f:(fun output ->
@@ -403,10 +403,10 @@ let create_foreign_bindings
 ;;
 
 let create_foreign_bindings_from_dllib
-      circuit
-      path_to_shared_lib
-      config
-      verilog_name_by_id
+  circuit
+  path_to_shared_lib
+  config
+  verilog_name_by_id
   =
   let filename =
     (* dlopen requires an explicit path name to an existing file. *)
@@ -421,16 +421,16 @@ let create_foreign_bindings_from_dllib
 ;;
 
 let compile_circuit
-      ?build_dir
-      ?(verbose = false)
-      ?(optimizations = true)
-      ?(parallel_compile = `Single_threaded)
-      ?(threads = `Non_thread_safe)
-      ~config
-      ~verilog_contents
-      ~circuit
-      verilog_name_by_id
-      ()
+  ?build_dir
+  ?(verbose = false)
+  ?(optimizations = true)
+  ?(parallel_compile = `Single_threaded)
+  ?(threads = `Non_thread_safe)
+  ~config
+  ~verilog_contents
+  ~circuit
+  verilog_name_by_id
+  ()
   =
   let ( ^/ ) = Stdlib.Filename.concat in
   let circuit_name = Circuit.name circuit in
@@ -516,14 +516,14 @@ let compile_circuit
 ;;
 
 let compile_circuit_with_cache
-      ?(cache = Cache.No_cache)
-      ?build_dir
-      ?verbose
-      ?optimizations
-      ?parallel_compile
-      ?threads
-      ~config
-      circuit
+  ?(cache = Cache.No_cache)
+  ?build_dir
+  ?verbose
+  ?optimizations
+  ?parallel_compile
+  ?threads
+  ~config
+  circuit
   =
   let shared_lib, verilog_name_by_id =
     let verilog_contents, verilog_name_by_id =
@@ -531,7 +531,7 @@ let compile_circuit_with_cache
       (* annotate all the signals that need to be exposed *)
       internal_signals circuit config
       |> List.iter ~f:(fun (s, _) ->
-        ignore (Signal.set_comment s "verilator public" : Signal.t));
+           ignore (Signal.set_comment s "verilator public" : Signal.t));
       let nm =
         Rtl.Expert.output_with_name_map
           ~output_mode:(Rtl.Output_mode.To_buffer buffer)
@@ -583,27 +583,27 @@ let compile_circuit_with_cache
         fname)
     in
     ( (match cache with
-        | No_cache -> compile_circuit ()
-        | Hashed { cache_dir } ->
-          let md5 = Md5.digest_bytes (Buffer.contents_bytes verilog_contents) in
-          run_command_exn ?verbose (sprintf "mkdir -p %s" cache_dir);
-          let fname = cache_dir ^/ Md5_lib.to_hex md5 ^ "-" ^ options in
-          check_cached_and_compile fname
-        | Explicit { file_name } -> check_cached_and_compile file_name)
+       | No_cache -> compile_circuit ()
+       | Hashed { cache_dir } ->
+         let md5 = Md5.digest_bytes (Buffer.contents_bytes verilog_contents) in
+         run_command_exn ?verbose (sprintf "mkdir -p %s" cache_dir);
+         let fname = cache_dir ^/ Md5_lib.to_hex md5 ^ "-" ^ options in
+         check_cached_and_compile fname
+       | Explicit { file_name } -> check_cached_and_compile file_name)
     , verilog_name_by_id )
   in
   shared_lib, verilog_name_by_id
 ;;
 
 let compile_circuit_and_load_shared_object
-      ?cache
-      ?build_dir
-      ?verbose
-      ?optimizations
-      ?parallel_compile
-      ?threads
-      ?(config = Cyclesim.Config.default)
-      circuit
+  ?cache
+  ?build_dir
+  ?verbose
+  ?optimizations
+  ?parallel_compile
+  ?threads
+  ?(config = Cyclesim.Config.default)
+  circuit
   =
   let shared_lib, verilog_name_by_id =
     compile_circuit_with_cache
@@ -620,15 +620,15 @@ let compile_circuit_and_load_shared_object
 ;;
 
 let create
-      ?cache
-      ?build_dir
-      ?verbose
-      ?optimizations
-      ?parallel_compile
-      ?threads
-      ?(config = Cyclesim.Config.default)
-      ~clock_names
-      circuit
+  ?cache
+  ?build_dir
+  ?verbose
+  ?optimizations
+  ?parallel_compile
+  ?threads
+  ?(config = Cyclesim.Config.default)
+  ~clock_names
+  circuit
   =
   let shared_object, verilog_name_by_id =
     compile_circuit_with_cache
@@ -650,22 +650,22 @@ let create
     List.filter_map
       (internal_signals circuit config ~verilog_name_by_id)
       ~f:(fun (s, names) ->
-        match s with
-        | Multiport_mem _ | Mem _ -> None
-        | _ ->
-          Some (List.map names ~f:(fun n -> n, ref (Bits.of_int ~width:(Signal.width s) 0))))
+      match s with
+      | Multiport_mem _ | Mem _ -> None
+      | _ ->
+        Some (List.map names ~f:(fun n -> n, ref (Bits.of_int ~width:(Signal.width s) 0))))
     |> List.concat
   in
   let internal_memories =
     List.filter_map
       (internal_signals circuit config ~verilog_name_by_id)
       ~f:(fun (s, names) ->
-        match s with
-        | Multiport_mem { size; _ } | Mem { memory = { mem_size = size; _ }; _ } ->
-          Some
-            (List.map names ~f:(fun n ->
-               n, Array.init size ~f:(fun _ -> ref (Bits.of_int ~width:(Signal.width s) 0))))
-        | _ -> None)
+      match s with
+      | Multiport_mem { size; _ } | Mem { memory = { mem_size = size; _ }; _ } ->
+        Some
+          (List.map names ~f:(fun n ->
+             n, Array.init size ~f:(fun _ -> ref (Bits.of_int ~width:(Signal.width s) 0))))
+      | _ -> None)
     |> List.concat
   in
   let out_ports_before_clock_edge = make_port_list (Circuit.outputs circuit) in
@@ -809,14 +809,14 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
   module Circuit = Circuit.With_interface (I) (O)
 
   let create_shared_object
-        ?cache:_
-        ?build_dir
-        ?verbose
-        ?optimizations
-        ?parallel_compile
-        ?threads
-        ?(config = Cyclesim.Config.default)
-        create_fn
+    ?cache:_
+    ?build_dir
+    ?verbose
+    ?optimizations
+    ?parallel_compile
+    ?threads
+    ?(config = Cyclesim.Config.default)
+    create_fn
     =
     let circuit = Circuit.create_exn ~name:"simulation" create_fn in
     let shared_lib, _verilog_name_by_id =
@@ -834,15 +834,15 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
   ;;
 
   let create
-        ?cache
-        ?build_dir
-        ?verbose
-        ?optimizations
-        ?parallel_compile
-        ?threads
-        ?config
-        ~clock_names
-        create_fn
+    ?cache
+    ?build_dir
+    ?verbose
+    ?optimizations
+    ?parallel_compile
+    ?threads
+    ?config
+    ~clock_names
+    create_fn
     =
     let circuit = Circuit.create_exn ~name:"simulation" create_fn in
     let ignore_missing_fields t_list ~of_alist list =
