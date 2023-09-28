@@ -14,11 +14,11 @@ depends: [
   "core"
   "core_unix"
   "hardcaml"
-  "ppx_deriving_hardcaml"
+  "ppx_hardcaml"
   "ppx_jane"
-  "ctypes"                {>= "0.18.0"}
+  "ctypes"         {>= "0.18.0"}
   "ctypes-foreign"
-  "dune"                  {>= "2.0.0"}
+  "dune"           {>= "2.0.0"}
 ]
 available: arch != "arm32" & arch != "x86_32"
 synopsis: "Hardcaml Verilator Simulation Backend"

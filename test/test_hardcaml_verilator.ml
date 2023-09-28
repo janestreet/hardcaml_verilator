@@ -40,7 +40,13 @@ let%expect_test "sequential" =
     in
     Circuit.create_exn ~name:"counter" [ counter_output ]
   in
-  let handle = Hardcaml_verilator.compile_circuit_and_load_shared_object circuit in
+  let handle =
+    let show_command_output = false in
+    Hardcaml_verilator.compile_circuit_and_load_shared_object
+      ~verilator_config:
+        { Hardcaml_verilator.Config.default with verbose = show_command_output }
+      circuit
+  in
   let set_input = set_input handle in
   let get_output = get_output handle in
   let set_clock = set_input "clock" in
@@ -134,7 +140,7 @@ let%expect_test "cyclesim with interface" =
   let sim =
     Sim.create
       ~cache:(Hashed { cache_dir })
-      ~threads:`Non_thread_safe
+      ~verilator_config:Hardcaml_verilator.Config.default
       ~clock_names:[ "clock" ]
       create
   in
@@ -156,7 +162,7 @@ let%expect_test "cyclesim with interface" =
    | Ok () -> ()
    | Error e -> raise_s [%message (e : Core_unix.Exit_or_signal.error)]);
   [%expect
-    {| cf6c2ce492346d42c55a7fa7fcf78dd2-optimizations-none-threads-some-non-thread-safe.so |}]
+    {| cf6c2ce492346d42c55a7fa7fcf78dd2-V5-O3-procs1-threads1-perfile0-perfunc0.so |}]
 ;;
 
 let%expect_test "test all port sizes" =
@@ -248,7 +254,6 @@ let%expect_test "waveform with internal signals (state machine)" =
   let sim =
     Sim.create
       ~clock_names:[ "clock" ]
-      ~optimizations:true
       ~config:Cyclesim.Config.trace_all
       Alternating.create
   in

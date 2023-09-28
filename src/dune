@@ -1,4 +1,13 @@
 (library (name hardcaml_verilator) (public_name hardcaml_verilator)
  (libraries core hardcaml core_unix ctypes ctypes.foreign
   core_unix.filename_unix core_unix.sys_unix)
- (preprocess (pps ppx_deriving_hardcaml ppx_jane)))
+ (preprocess (pps ppx_hardcaml ppx_jane)))
+
+(rule (targets setup.ml) (deps)
+ (action
+  (bash
+    "cat <<EOF > setup.ml\
+   \nlet verilator_v4 = \"verilator\"\
+   \nlet verilator_v5 = \"verilator\"\
+   \nlet default_version = 4\
+   \nEOF")))

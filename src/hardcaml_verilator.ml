@@ -4,6 +4,11 @@ open Ctypes
 open Ctypes_foreign_flat
 open Foreign
 module Unix = Core_unix
+module Optimization_level = Optimization_level
+module Threads = Threads
+module Output_split = Output_split
+module Verilator_version = Verilator_version
+module Config = Config
 
 module Cache = struct
   type t =
@@ -72,10 +77,7 @@ type t =
 type 'a with_options =
   ?cache:Cache.t
   -> ?build_dir:string
-  -> ?verbose:bool
-  -> ?optimizations:bool
-  -> ?parallel_compile:[ `Single_threaded | `Parallel of int ]
-  -> ?threads:[ `Non_thread_safe | `With_threads of int ]
+  -> ?verilator_config:Config.t
   -> ?config:Cyclesim.Config.t
   -> 'a
 
@@ -133,14 +135,30 @@ let internal_signals
 
 let[@inline always] ceil_div a b = if a % b = 0 then a / b else (a / b) + 1
 
+(* If verbose is set, the output will be printed anyway, otherwise capture the output and
+   display it on error. *)
+let with_tmp_stdout ~verbose ~f =
+  let tmp_stdout =
+    if verbose then None else Some (Filename_unix.temp_file "verilator_run" ".stdout")
+  in
+  f tmp_stdout;
+  Option.iter tmp_stdout ~f:Unix.unlink
+;;
+
 let run_command_exn ?(verbose = false) command =
-  if verbose then print_endline command;
-  let x = if verbose then command else command ^ " &>/dev/null" in
-  match Unix.system x with
-  | Ok () -> ()
-  | Error e ->
-    failwith
-      (Sexp.to_string [%message (command : string) (e : Unix.Exit_or_signal.error)])
+  with_tmp_stdout ~verbose ~f:(fun tmp_stdout ->
+    let command =
+      match tmp_stdout with
+      | Some tmp_stdout -> [%string "%{command} &>%{tmp_stdout}"]
+      | None -> command
+    in
+    match Unix.system command with
+    | Ok () -> ()
+    | Error e ->
+      let stdout = Option.map tmp_stdout ~f:In_channel.read_all in
+      raise_s
+        [%message
+          (command : string) (e : Unix.Exit_or_signal.error) (stdout : string option)])
 ;;
 
 let generate_cpp_wrapper
@@ -422,10 +440,7 @@ let create_foreign_bindings_from_dllib
 
 let compile_circuit
   ?build_dir
-  ?(verbose = false)
-  ?(optimizations = true)
-  ?(parallel_compile = `Single_threaded)
-  ?(threads = `Non_thread_safe)
+  ~(verilator_config : Config.t)
   ~config
   ~verilog_contents
   ~circuit
@@ -456,72 +471,33 @@ let compile_circuit
   in
   let path_to_static_lib = obj_dir ^/ sprintf "V%s__ALL.a" (Circuit.name circuit) in
   let path_to_shared_lib = obj_dir ^/ sprintf "V%s__ALL.so" (Circuit.name circuit) in
-  let relevant_object_files =
-    let base = [ "wrapper.o"; "verilated.o" ] in
-    match threads with
-    | `Non_thread_safe -> base
-    | `With_threads _ -> base @ [ "verilated_threads.o" ]
-  in
-  let optimizations_flag = if optimizations then "-O3" else "-O0" in
-  let verilator_flags =
-    let threads =
-      match threads with
-      | `Non_thread_safe -> "--no-threads"
-      | `With_threads x -> "--threads " ^ Int.to_string x
-    in
-    let top_module = "--top-module " ^ Circuit.name circuit in
-    let output_split =
-      match parallel_compile with
-      | `Single_threaded -> ""
-      | `Parallel _ -> "--output-split 20000"
-    in
-    String.concat ~sep:" " [ optimizations_flag; threads; top_module; output_split ]
-  in
-  let make_env_vars, make_parallel_flag =
-    match parallel_compile with
-    | `Single_threaded -> "", ""
-    | `Parallel jobs -> "VM_PARALLEL_BUILDS=1", sprintf "-j%i" jobs
-  in
+  let verbose = verilator_config.verbose in
+  let circuit_name = Circuit.name circuit in
   run_command_exn
     ~verbose
-    (sprintf
-       "CXXFLAGS=\"-fPIC\" verilator %s -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED --cc %s \
-        --Mdir %s %s"
-       verilator_flags
-       path_to_verilog
-       obj_dir
-       path_to_cpp_wrapper);
+    (Config.verilator_compilation_command
+       verilator_config
+       ~circuit_name
+       ~path_to_verilog
+       ~obj_dir
+       ~path_to_cpp_wrapper);
   run_command_exn
     ~verbose
-    (sprintf
-       "CXXFLAGS=\"-fPIC -g %s\" %s make %s -C %s -f V%s.mk V%s__ALL.a %s"
-       optimizations_flag
-       make_env_vars
-       make_parallel_flag
-       obj_dir
-       (Circuit.name circuit)
-       (Circuit.name circuit)
-       (String.concat ~sep:" " relevant_object_files));
+    (Config.make_compilation_command verilator_config ~circuit_name ~obj_dir);
   run_command_exn
     ~verbose
-    (sprintf
-       "g++ -lpthread -fPIC %s -g -shared -o %s %s %s"
-       optimizations_flag
-       path_to_shared_lib
-       (String.concat
-          ~sep:" "
-          (List.map ~f:(fun a -> obj_dir ^/ a) relevant_object_files))
-       path_to_static_lib);
+    (Config.final_link_command
+       verilator_config
+       ~obj_dir
+       ~path_to_shared_lib
+       ~path_to_static_lib);
   path_to_shared_lib
 ;;
 
 let compile_circuit_with_cache
   ?(cache = Cache.No_cache)
   ?build_dir
-  ?verbose
-  ?optimizations
-  ?parallel_compile
-  ?threads
+  ?(verilator_config = Config.from_env)
   ~config
   circuit
   =
@@ -543,50 +519,31 @@ let compile_circuit_with_cache
     let compile_circuit () =
       compile_circuit
         ?build_dir
-        ?verbose
-        ?optimizations
-        ?parallel_compile
-        ?threads
+        ~verilator_config
         ~config
         ~circuit
         ~verilog_contents
         verilog_name_by_id
         ()
     in
-    let option_to_string f a =
-      match a with
-      | None -> "none"
-      | Some a -> "some-" ^ f a
-    in
-    let threads_to_string t =
-      match t with
-      | `Non_thread_safe -> "non-thread-safe"
-      | `With_threads x -> sprintf "with-threads-%d" x
-    in
     let options =
-      let suffix =
-        [ "optimizations"
-        ; option_to_string Bool.to_string optimizations
-        ; "threads"
-        ; option_to_string threads_to_string threads
-        ]
-        |> String.concat ~sep:"-"
-      in
+      let suffix = Config.label verilator_config in
       suffix ^ ".so"
     in
+    let verbose = verilator_config.verbose in
     let check_cached_and_compile fname =
       if Sys_unix.file_exists_exn fname
       then fname
       else (
         let compiled = compile_circuit () in
-        run_command_exn ?verbose (sprintf "cp %s %s" compiled fname);
+        run_command_exn ~verbose (sprintf "cp %s %s" compiled fname);
         fname)
     in
     ( (match cache with
        | No_cache -> compile_circuit ()
        | Hashed { cache_dir } ->
          let md5 = Md5.digest_bytes (Buffer.contents_bytes verilog_contents) in
-         run_command_exn ?verbose (sprintf "mkdir -p %s" cache_dir);
+         run_command_exn ~verbose (sprintf "mkdir -p %s" cache_dir);
          let fname = cache_dir ^/ Md5_lib.to_hex md5 ^ "-" ^ options in
          check_cached_and_compile fname
        | Explicit { file_name } -> check_cached_and_compile file_name)
@@ -598,23 +555,12 @@ let compile_circuit_with_cache
 let compile_circuit_and_load_shared_object
   ?cache
   ?build_dir
-  ?verbose
-  ?optimizations
-  ?parallel_compile
-  ?threads
+  ?verilator_config
   ?(config = Cyclesim.Config.default)
   circuit
   =
   let shared_lib, verilog_name_by_id =
-    compile_circuit_with_cache
-      ?cache
-      ?build_dir
-      ?verbose
-      ?optimizations
-      ?parallel_compile
-      ?threads
-      ~config
-      circuit
+    compile_circuit_with_cache ?cache ?build_dir ?verilator_config ~config circuit
   in
   create_foreign_bindings_from_dllib circuit shared_lib config verilog_name_by_id
 ;;
@@ -622,24 +568,13 @@ let compile_circuit_and_load_shared_object
 let create
   ?cache
   ?build_dir
-  ?verbose
-  ?optimizations
-  ?parallel_compile
-  ?threads
+  ?verilator_config
   ?(config = Cyclesim.Config.default)
   ~clock_names
   circuit
   =
   let shared_object, verilog_name_by_id =
-    compile_circuit_with_cache
-      ?cache
-      ?build_dir
-      ?verbose
-      ?optimizations
-      ?parallel_compile
-      ?threads
-      ~config
-      circuit
+    compile_circuit_with_cache ?cache ?build_dir ?verilator_config ~config circuit
   in
   let make_port_list signals =
     List.map signals ~f:(fun s ->
@@ -811,10 +746,7 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
   let create_shared_object
     ?cache:_
     ?build_dir
-    ?verbose
-    ?optimizations
-    ?parallel_compile
-    ?threads
+    ?verilator_config
     ?(config = Cyclesim.Config.default)
     create_fn
     =
@@ -823,27 +755,14 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
       compile_circuit_with_cache
         ~cache:No_cache
         ?build_dir
-        ?verbose
-        ?optimizations
-        ?parallel_compile
-        ?threads
+        ?verilator_config
         ~config
         circuit
     in
     shared_lib
   ;;
 
-  let create
-    ?cache
-    ?build_dir
-    ?verbose
-    ?optimizations
-    ?parallel_compile
-    ?threads
-    ?config
-    ~clock_names
-    create_fn
-    =
+  let create ?cache ?build_dir ?verilator_config ?config ~clock_names create_fn =
     let circuit = Circuit.create_exn ~name:"simulation" create_fn in
     let ignore_missing_fields t_list ~of_alist list =
       List.map t_list ~f:(fun (n, w) ->
@@ -853,16 +772,7 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
       |> of_alist
     in
     Cyclesim.Private.coerce
-      (create
-         ?cache
-         ?build_dir
-         ?verbose
-         ?optimizations
-         ?parallel_compile
-         ?threads
-         ?config
-         ~clock_names
-         circuit)
+      (create ?cache ?build_dir ?verilator_config ?config ~clock_names circuit)
       ~to_input:
         (ignore_missing_fields
            (I.to_list I.port_names_and_widths)

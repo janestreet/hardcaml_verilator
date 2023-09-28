@@ -18,6 +18,12 @@
 *)
 open Hardcaml
 
+module Optimization_level = Optimization_level
+module Threads = Threads
+module Output_split = Output_split
+module Verilator_version = Verilator_version
+module Config = Config
+
 module Cache : sig
   type t =
     | No_cache
@@ -56,14 +62,12 @@ type t =
       compiled in parallel, and if so with how many parallel jobs.
     - [threads] speficies whether the verilator simulation object should be generated to
       be run in parallel, and if so with how many parallel threads.
+    - [version] specifies which major version of verilator we want to use.
 *)
 type 'a with_options =
   ?cache:Cache.t
   -> ?build_dir:string
-  -> ?verbose:bool
-  -> ?optimizations:bool
-  -> ?parallel_compile:[ `Single_threaded | `Parallel of int ]
-  -> ?threads:[ `Non_thread_safe | `With_threads of int ]
+  -> ?verilator_config:Config.t
   -> ?config:Cyclesim.Config.t
   -> 'a
 
