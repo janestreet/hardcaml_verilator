@@ -119,7 +119,7 @@ let%expect_test "cyclesim with interface" =
       ; foo : 'a [@bits 16]
       ; bar : 'a [@bits 96]
       }
-    [@@deriving sexp_of, hardcaml]
+    [@@deriving hardcaml]
   end
   in
   let module O = struct
@@ -127,7 +127,7 @@ let%expect_test "cyclesim with interface" =
       { hello : 'a [@bits 16]
       ; world : 'a [@bits 16]
       }
-    [@@deriving sexp_of, hardcaml]
+    [@@deriving hardcaml]
   end
   in
   let create (i : _ I.t) =
@@ -197,7 +197,7 @@ module Alternating = struct
       { clock : 'a
       ; clear : 'a
       }
-    [@@deriving sexp_of, hardcaml]
+    [@@deriving hardcaml]
   end
 
   module O = struct
@@ -206,7 +206,7 @@ module Alternating = struct
       ; counter1 : 'a [@bits 3]
       ; counter2 : 'a [@bits 3]
       }
-    [@@deriving sexp_of, hardcaml]
+    [@@deriving hardcaml]
   end
 
   module State = struct

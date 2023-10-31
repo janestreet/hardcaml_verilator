@@ -44,7 +44,7 @@ end
 type t =
   { input_setters : (string * (Bits.t -> unit)) list
   ; output_getters : (string * (unit -> Bits.t)) list
-  ; internal_getters : (string * (unit -> Bits.t)) list
+  ; internal_getters : (string * (Signal.t * Bits.Mutable.t * (unit -> unit))) list
   ; eval : unit -> unit
   ; complete : unit -> unit
   }

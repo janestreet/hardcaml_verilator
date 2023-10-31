@@ -69,7 +69,7 @@ let verilator_t : [ `verilator ] structure typ = structure "verilator"
 type t =
   { input_setters : (string * (Bits.t -> unit)) list
   ; output_getters : (string * (unit -> Bits.t)) list
-  ; internal_getters : (string * (unit -> Bits.t)) list
+  ; internal_getters : (string * (Signal.t * Bits.Mutable.t * (unit -> unit))) list
   ; eval : unit -> unit
   ; complete : unit -> unit
   }
@@ -103,7 +103,7 @@ let output_addr_fn_name ~circuit_name ~port_name =
 ;;
 
 let internal_signals
-  ?(verilog_name_by_id : Rtl.signals_name_map_t option)
+  ?(verilog_name_by_id : Rtl.Signals_name_map.t option)
   circuit
   (config : Cyclesim.Config.t)
   =
@@ -165,7 +165,7 @@ let generate_cpp_wrapper
   buffer
   (circuit : Circuit.t)
   (config : Cyclesim.Config.t)
-  (verilog_name_by_id : Rtl.signals_name_map_t)
+  (verilog_name_by_id : Rtl.Signals_name_map.t)
   =
   let circuit_name = Circuit.name circuit in
   let typ = "V" ^ circuit_name in
@@ -327,9 +327,8 @@ let round_up_size i =
 
 let create_foreign_bindings
   ?from
-  (config : Cyclesim.Config.t)
   (circuit : Circuit.t)
-  (verilog_name_by_id : Rtl.signals_name_map_t)
+  (internal_signals : (Signal.t * string list) list)
   =
   let circuit_name = Circuit.name circuit in
   let verilator_ptr =
@@ -357,7 +356,7 @@ let create_foreign_bindings
           assert (Bits.width bits = Signal.width input);
           copy_into_verilator (Bits.Expert.unsafe_underlying_repr bits) ))
   in
-  let get_getters ?alias_name bit_width ~port_name =
+  let init_getters ?alias_name bit_width ~port_name =
     let size = ceil_div bit_width 8 in
     let foreign_address =
       foreign
@@ -376,33 +375,42 @@ let create_foreign_bindings
       | None -> port_name
       | Some n -> n
     in
+    name, copy_from_verilator
+  in
+  let bits_getters ?alias_name bit_width ~port_name =
+    let name, copy_from_verilator = init_getters ?alias_name bit_width ~port_name in
     ( name
     , fun () ->
-        let bits = Bits.of_int 0 ~width:bit_width in
+        let bits = Bits.of_int ~width:bit_width 0 in
         copy_from_verilator (Bits.Expert.unsafe_underlying_repr bits);
         bits )
+  in
+  let bits_mutable_getters ?alias_name signal bit_width ~port_name =
+    let name, copy_from_verilator = init_getters ?alias_name bit_width ~port_name in
+    let bits = Bits.Mutable.create bit_width in
+    name, (signal, bits, fun () -> copy_from_verilator (bits :> Bytes.t))
   in
   let output_getters =
     List.map (Circuit.outputs circuit) ~f:(fun output ->
       let port_name = List.hd_exn (Signal.names output) in
       let bit_width = Signal.width output in
-      get_getters bit_width ~port_name)
+      bits_getters bit_width ~port_name)
   in
   let internal_getters =
-    let signals_and_names = internal_signals circuit config ~verilog_name_by_id in
+    let signals_and_names = internal_signals in
     List.map signals_and_names ~f:(fun (signal, port_names) ->
       (* Only use the getter for the first alias *)
       let port_name = List.hd_exn port_names in
       List.map port_names ~f:(fun alias_name ->
         let bit_width =
           match signal with
-          | Multiport_mem { size; _ } | Mem { memory = { mem_size = size; _ }; _ } ->
+          | Multiport_mem { size; _ } ->
             (* Memories are exposed as 2d arrays so adjust the size to make sure we round
                up and correctly read the entire contents. *)
             size * round_up_size (Signal.width signal)
           | _ -> Signal.width signal
         in
-        get_getters ~alias_name bit_width ~port_name))
+        bits_mutable_getters ~alias_name signal bit_width ~port_name))
     |> List.concat
   in
   let complete =
@@ -420,12 +428,7 @@ let create_foreign_bindings
   { eval; input_setters; output_getters; internal_getters; complete }
 ;;
 
-let create_foreign_bindings_from_dllib
-  circuit
-  path_to_shared_lib
-  config
-  verilog_name_by_id
-  =
+let create_foreign_bindings_from_dllib circuit path_to_shared_lib internal_signals =
   let filename =
     (* dlopen requires an explicit path name to an existing file. *)
     match Filename_unix.realpath path_to_shared_lib with
@@ -435,7 +438,7 @@ let create_foreign_bindings_from_dllib
         [%message "Could not find verilator shared library" (path_to_shared_lib : string)]
   in
   let dllib = Dl.dlopen ~filename ~flags:[ RTLD_NOW ] in
-  create_foreign_bindings ~from:dllib config circuit verilog_name_by_id
+  create_foreign_bindings ~from:dllib circuit internal_signals
 ;;
 
 let compile_circuit
@@ -549,7 +552,7 @@ let compile_circuit_with_cache
        | Explicit { file_name } -> check_cached_and_compile file_name)
     , verilog_name_by_id )
   in
-  shared_lib, verilog_name_by_id
+  shared_lib, internal_signals ~verilog_name_by_id circuit config
 ;;
 
 let compile_circuit_and_load_shared_object
@@ -559,10 +562,10 @@ let compile_circuit_and_load_shared_object
   ?(config = Cyclesim.Config.default)
   circuit
   =
-  let shared_lib, verilog_name_by_id =
+  let shared_lib, internal_signals =
     compile_circuit_with_cache ?cache ?build_dir ?verilator_config ~config circuit
   in
-  create_foreign_bindings_from_dllib circuit shared_lib config verilog_name_by_id
+  create_foreign_bindings_from_dllib circuit shared_lib internal_signals
 ;;
 
 let create
@@ -573,7 +576,7 @@ let create
   ~clock_names
   circuit
   =
-  let shared_object, verilog_name_by_id =
+  let shared_object, internal_signals =
     compile_circuit_with_cache ?cache ?build_dir ?verilator_config ~config circuit
   in
   let make_port_list signals =
@@ -582,21 +585,17 @@ let create
   in
   let in_ports = make_port_list (Circuit.inputs circuit) in
   let internal_ports =
-    List.filter_map
-      (internal_signals circuit config ~verilog_name_by_id)
-      ~f:(fun (s, names) ->
+    List.filter_map internal_signals ~f:(fun (s, names) ->
       match s with
-      | Multiport_mem _ | Mem _ -> None
+      | Multiport_mem _ -> None
       | _ ->
         Some (List.map names ~f:(fun n -> n, ref (Bits.of_int ~width:(Signal.width s) 0))))
     |> List.concat
   in
   let internal_memories =
-    List.filter_map
-      (internal_signals circuit config ~verilog_name_by_id)
-      ~f:(fun (s, names) ->
+    List.filter_map internal_signals ~f:(fun (s, names) ->
       match s with
-      | Multiport_mem { size; _ } | Mem { memory = { mem_size = size; _ }; _ } ->
+      | Multiport_mem { size; _ } ->
         Some
           (List.map names ~f:(fun n ->
              n, Array.init size ~f:(fun _ -> ref (Bits.of_int ~width:(Signal.width s) 0))))
@@ -606,13 +605,16 @@ let create
   let out_ports_before_clock_edge = make_port_list (Circuit.outputs circuit) in
   let out_ports_after_clock_edge = make_port_list (Circuit.outputs circuit) in
   let handle =
-    create_foreign_bindings_from_dllib circuit shared_object config verilog_name_by_id
+    create_foreign_bindings_from_dllib circuit shared_object internal_signals
   in
   let make_read_memories memory_ports getters : (unit -> unit) list =
     List.map memory_ports ~f:(fun (name, value_ref_array) ->
-      let fn = getters |> List.find_exn ~f:(fun a -> String.equal (fst a) name) |> snd in
+      let _, bits, fn =
+        getters |> List.find_exn ~f:(fun a -> String.equal (fst a) name) |> snd
+      in
       fun () ->
-        let value = fn () in
+        fn ();
+        let value = Bits.Mutable.to_bits bits in
         let width = round_up_size (Bits.width !(value_ref_array.(0))) in
         Array.iteri value_ref_array ~f:(fun i value_ref ->
           value_ref := Bits.select value ((width * (i + 1)) - 1) (width * i)))
@@ -625,6 +627,15 @@ let create
           getters |> List.find_exn ~f:(fun a -> String.equal (fst a) name) |> snd
         in
         fun () -> value_ref := fn ())
+    in
+    let make_read_internals out_ports getters =
+      List.map out_ports ~f:(fun (name, value_ref) ->
+        let _, bits, fn =
+          getters |> List.find_exn ~f:(fun a -> String.equal (fst a) name) |> snd
+        in
+        fun () ->
+          fn ();
+          value_ref := Bits.Mutable.to_bits bits)
     in
     let make_read_inputs in_ports =
       List.map in_ports ~f:(fun (name, value_ref) ->
@@ -657,7 +668,7 @@ let create
     in
     let cycle_before_clock_edge =
       let set_inputs = make_read_inputs in_ports in
-      let read_internals = make_read_outputs internal_ports handle.internal_getters in
+      let read_internals = make_read_internals internal_ports handle.internal_getters in
       let read_outputs =
         make_read_outputs out_ports_before_clock_edge handle.output_getters
       in
@@ -704,6 +715,20 @@ let create
       (module String)
       (List.map2_exn read_memories internal_memories ~f:(fun f (n, bits) -> n, (f, bits)))
   in
+  let traced =
+    List.map internal_signals ~f:(fun (signal, names) ->
+      { Cyclesim.Traced.signal; names })
+  in
+  let lookup =
+    let map =
+      List.fold
+        handle.internal_getters
+        ~init:(Map.empty (module Signal.Uid))
+        ~f:(fun map (_, (signal, bits, _)) ->
+          Map.add_exn map ~key:(Signal.uid signal) ~data:bits)
+    in
+    fun signal -> Map.find map (Signal.uid signal)
+  in
   let lookup_reg s =
     Hashtbl.find_and_call
       internal_signals_table
@@ -728,12 +753,13 @@ let create
     ~in_ports
     ~out_ports_before_clock_edge
     ~out_ports_after_clock_edge
-    ~internal_ports
     ~reset
     ~cycle_check
     ~cycle_before_clock_edge:(fun () -> !cycle_before_clock_edge ())
     ~cycle_at_clock_edge:(fun () -> !cycle_at_clock_edge ())
     ~cycle_after_clock_edge:(fun () -> !cycle_after_clock_edge ())
+    ~traced
+    ~lookup
     ~lookup_reg
     ~lookup_mem
     ~assertions:(Map.empty (module String))
