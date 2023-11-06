@@ -16,8 +16,9 @@
     6. Create a [Cyclesim.t] instance by supplying the relevant functions with bindings to
     >    verilator
 *)
-open Hardcaml
 
+open Core
+open Hardcaml
 module Optimization_level = Optimization_level
 module Threads = Threads
 module Output_split = Output_split
@@ -41,10 +42,20 @@ module Simulation_backend : sig
   val flag : t Core.Command.Param.t
 end
 
+type input_port = Bits.t -> unit
+type output_port = unit -> Bits.t
+
+type internal_port =
+  { signal : Signal.t
+  ; bits : Bits.Mutable.t
+  ; update : unit -> unit
+  ; aliases : string list
+  }
+
 type t =
-  { input_setters : (string * (Bits.t -> unit)) list
-  ; output_getters : (string * (unit -> Bits.t)) list
-  ; internal_getters : (string * (Signal.t * Bits.Mutable.t * (unit -> unit))) list
+  { input_setters : (string, input_port) List.Assoc.t
+  ; output_getters : (string, output_port) List.Assoc.t
+  ; internal_getters : (string, internal_port) List.Assoc.t
   ; eval : unit -> unit
   ; complete : unit -> unit
   }

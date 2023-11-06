@@ -66,10 +66,20 @@ end
 
 let verilator_t : [ `verilator ] structure typ = structure "verilator"
 
+type input_port = Bits.t -> unit
+type output_port = unit -> Bits.t
+
+type internal_port =
+  { signal : Signal.t
+  ; bits : Bits.Mutable.t
+  ; update : unit -> unit
+  ; aliases : string list
+  }
+
 type t =
-  { input_setters : (string * (Bits.t -> unit)) list
-  ; output_getters : (string * (unit -> Bits.t)) list
-  ; internal_getters : (string * (Signal.t * Bits.Mutable.t * (unit -> unit))) list
+  { input_setters : (string, input_port) List.Assoc.t
+  ; output_getters : (string, output_port) List.Assoc.t
+  ; internal_getters : (string, internal_port) List.Assoc.t
   ; eval : unit -> unit
   ; complete : unit -> unit
   }
@@ -356,7 +366,7 @@ let create_foreign_bindings
           assert (Bits.width bits = Signal.width input);
           copy_into_verilator (Bits.Expert.unsafe_underlying_repr bits) ))
   in
-  let init_getters ?alias_name bit_width ~port_name =
+  let init_getters bit_width ~port_name =
     let size = ceil_div bit_width 8 in
     let foreign_address =
       foreign
@@ -370,25 +380,25 @@ let create_foreign_bindings
         ~bit_width
         ~src:(Ctypes.bigarray_of_ptr Ctypes.array1 size Bigarray.Char foreign_address)
     in
-    let name =
-      match alias_name with
-      | None -> port_name
-      | Some n -> n
-    in
-    name, copy_from_verilator
+    port_name, copy_from_verilator
   in
-  let bits_getters ?alias_name bit_width ~port_name =
-    let name, copy_from_verilator = init_getters ?alias_name bit_width ~port_name in
+  let bits_getters bit_width ~port_name =
+    let name, copy_from_verilator = init_getters bit_width ~port_name in
     ( name
     , fun () ->
         let bits = Bits.of_int ~width:bit_width 0 in
         copy_from_verilator (Bits.Expert.unsafe_underlying_repr bits);
         bits )
   in
-  let bits_mutable_getters ?alias_name signal bit_width ~port_name =
-    let name, copy_from_verilator = init_getters ?alias_name bit_width ~port_name in
+  let bits_mutable_getters signal bit_width ~port_name ~aliases =
+    let name, copy_from_verilator = init_getters bit_width ~port_name in
     let bits = Bits.Mutable.create bit_width in
-    name, (signal, bits, fun () -> copy_from_verilator (bits :> Bytes.t))
+    ( name
+    , { signal
+      ; bits
+      ; update = (fun () -> copy_from_verilator (bits :> Bytes.t))
+      ; aliases
+      } )
   in
   let output_getters =
     List.map (Circuit.outputs circuit) ~f:(fun output ->
@@ -401,17 +411,15 @@ let create_foreign_bindings
     List.map signals_and_names ~f:(fun (signal, port_names) ->
       (* Only use the getter for the first alias *)
       let port_name = List.hd_exn port_names in
-      List.map port_names ~f:(fun alias_name ->
-        let bit_width =
-          match signal with
-          | Multiport_mem { size; _ } ->
-            (* Memories are exposed as 2d arrays so adjust the size to make sure we round
-               up and correctly read the entire contents. *)
-            size * round_up_size (Signal.width signal)
-          | _ -> Signal.width signal
-        in
-        bits_mutable_getters ~alias_name signal bit_width ~port_name))
-    |> List.concat
+      let bit_width =
+        match signal with
+        | Multiport_mem { size; _ } ->
+          (* Memories are exposed as 2d arrays so adjust the size to make sure we round
+             up and correctly read the entire contents. *)
+          size * round_up_size (Signal.width signal)
+        | _ -> Signal.width signal
+      in
+      bits_mutable_getters signal bit_width ~port_name ~aliases:port_names)
   in
   let complete =
     let f =
@@ -576,7 +584,7 @@ let create
   ~clock_names
   circuit
   =
-  let shared_object, internal_signals =
+  let shared_object, (internal_signals : (Signal.t * string list) List.t) =
     compile_circuit_with_cache ?cache ?build_dir ?verilator_config ~config circuit
   in
   let make_port_list signals =
@@ -584,14 +592,6 @@ let create
       List.hd_exn (Signal.names s), ref (Bits.of_int ~width:(Signal.width s) 0))
   in
   let in_ports = make_port_list (Circuit.inputs circuit) in
-  let internal_ports =
-    List.filter_map internal_signals ~f:(fun (s, names) ->
-      match s with
-      | Multiport_mem _ -> None
-      | _ ->
-        Some (List.map names ~f:(fun n -> n, ref (Bits.of_int ~width:(Signal.width s) 0))))
-    |> List.concat
-  in
   let internal_memories =
     List.filter_map internal_signals ~f:(fun (s, names) ->
       match s with
@@ -609,7 +609,7 @@ let create
   in
   let make_read_memories memory_ports getters : (unit -> unit) list =
     List.map memory_ports ~f:(fun (name, value_ref_array) ->
-      let _, bits, fn =
+      let { signal = _; bits; update = fn; aliases = _ } =
         getters |> List.find_exn ~f:(fun a -> String.equal (fst a) name) |> snd
       in
       fun () ->
@@ -628,14 +628,9 @@ let create
         in
         fun () -> value_ref := fn ())
     in
-    let make_read_internals out_ports getters =
-      List.map out_ports ~f:(fun (name, value_ref) ->
-        let _, bits, fn =
-          getters |> List.find_exn ~f:(fun a -> String.equal (fst a) name) |> snd
-        in
-        fun () ->
-          fn ();
-          value_ref := Bits.Mutable.to_bits bits)
+    let make_read_internals getters =
+      List.filter_map getters ~f:(fun (_, { signal; bits = _; update; aliases = _ }) ->
+        if Signal.is_mem signal then None else Some update)
     in
     let make_read_inputs in_ports =
       List.map in_ports ~f:(fun (name, value_ref) ->
@@ -668,7 +663,7 @@ let create
     in
     let cycle_before_clock_edge =
       let set_inputs = make_read_inputs in_ports in
-      let read_internals = make_read_internals internal_ports handle.internal_getters in
+      let read_internals = make_read_internals handle.internal_getters in
       let read_outputs =
         make_read_outputs out_ports_before_clock_edge handle.output_getters
       in
@@ -709,7 +704,15 @@ let create
     complete := new_complete
   in
   let cycle_check () = () in
-  let internal_signals_table = Hashtbl.of_alist_exn (module String) internal_ports in
+  let internal_signals_table =
+    let tbl = Hashtbl.create (module String) in
+    List.iter
+      handle.internal_getters
+      ~f:(fun (_, { signal; bits; update = _; aliases }) ->
+      if not (Signal.is_mem signal)
+      then List.iter aliases ~f:(fun name -> Hashtbl.add_exn tbl ~key:name ~data:bits));
+    tbl
+  in
   let internal_memories_table_with_dynamic_lookup =
     Hashtbl.of_alist_exn
       (module String)
@@ -724,18 +727,12 @@ let create
       List.fold
         handle.internal_getters
         ~init:(Map.empty (module Signal.Uid))
-        ~f:(fun map (_, (signal, bits, _)) ->
+        ~f:(fun map (_, { signal; bits; update = _; aliases = _ }) ->
           Map.add_exn map ~key:(Signal.uid signal) ~data:bits)
     in
     fun signal -> Map.find map (Signal.uid signal)
   in
-  let lookup_reg s =
-    Hashtbl.find_and_call
-      internal_signals_table
-      s
-      ~if_found:(fun bits -> Some (Bits.to_constant !bits |> Bits.Mutable.of_constant))
-      ~if_not_found:(Fn.const None)
-  in
+  let lookup_reg s = Hashtbl.find internal_signals_table s in
   let lookup_mem s =
     Hashtbl.find_and_call
       internal_memories_table_with_dynamic_lookup
