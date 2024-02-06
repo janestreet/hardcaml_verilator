@@ -363,7 +363,14 @@ let create_foreign_bindings
       in
       ( port_name
       , fun bits ->
-          assert (Bits.width bits = Signal.width input);
+          if Bits.width bits <> Signal.width input
+          then
+            raise_s
+              [%message
+                "input port width mismatch!"
+                  (port_name : string)
+                  ~port_width:(Signal.width input : int)
+                  ~value_width:(Bits.width bits : int)];
           copy_into_verilator (Bits.Expert.unsafe_underlying_repr bits) ))
   in
   let init_getters bit_width ~port_name =
@@ -598,7 +605,7 @@ let create
       | Multiport_mem { size; _ } ->
         Some
           (List.map names ~f:(fun n ->
-             n, Array.init size ~f:(fun _ -> ref (Bits.of_int ~width:(Signal.width s) 0))))
+             n, s, Array.init size ~f:(fun _ -> Bits.of_int ~width:(Signal.width s) 0)))
       | _ -> None)
     |> List.concat
   in
@@ -608,16 +615,17 @@ let create
     create_foreign_bindings_from_dllib circuit shared_object internal_signals
   in
   let make_read_memories memory_ports getters : (unit -> unit) list =
-    List.map memory_ports ~f:(fun (name, value_ref_array) ->
+    List.map memory_ports ~f:(fun (name, _, value_array) ->
       let { signal = _; bits; update = fn; aliases = _ } =
         getters |> List.find_exn ~f:(fun a -> String.equal (fst a) name) |> snd
       in
       fun () ->
         fn ();
         let value = Bits.Mutable.to_bits bits in
-        let width = round_up_size (Bits.width !(value_ref_array.(0))) in
-        Array.iteri value_ref_array ~f:(fun i value_ref ->
-          value_ref := Bits.select value ((width * (i + 1)) - 1) (width * i)))
+        let width = round_up_size (Bits.width value_array.(0)) in
+        for i = 0 to Array.length value_array - 1 do
+          value_array.(i) <- Bits.select value ((width * (i + 1)) - 1) (width * i)
+        done)
   in
   let read_memories = make_read_memories internal_memories handle.internal_getters in
   let make_cycle_functions () =
@@ -630,7 +638,7 @@ let create
     in
     let make_read_internals getters =
       List.filter_map getters ~f:(fun (_, { signal; bits = _; update; aliases = _ }) ->
-        if Signal.is_mem signal then None else Some update)
+        if Signal.Type.is_mem signal then None else Some update)
     in
     let make_read_inputs in_ports =
       List.map in_ports ~f:(fun (name, value_ref) ->
@@ -704,45 +712,53 @@ let create
     complete := new_complete
   in
   let cycle_check () = () in
-  let internal_signals_table =
-    let tbl = Hashtbl.create (module String) in
-    List.iter
-      handle.internal_getters
-      ~f:(fun (_, { signal; bits; update = _; aliases }) ->
-      if not (Signal.is_mem signal)
-      then List.iter aliases ~f:(fun name -> Hashtbl.add_exn tbl ~key:name ~data:bits));
-    tbl
-  in
   let internal_memories_table_with_dynamic_lookup =
     Hashtbl.of_alist_exn
-      (module String)
-      (List.map2_exn read_memories internal_memories ~f:(fun f (n, bits) -> n, (f, bits)))
+      (module Signal.Uid)
+      (List.map2_exn read_memories internal_memories ~f:(fun f (_, s, bits) ->
+         Signal.uid s, (f, bits)))
   in
   let traced =
-    List.map internal_signals ~f:(fun (signal, names) ->
-      { Cyclesim.Traced.signal; names })
+    { Cyclesim.Traced.input_ports =
+        List.map (Circuit.inputs circuit) ~f:Cyclesim.Traced.to_io_port
+    ; output_ports = List.map (Circuit.outputs circuit) ~f:Cyclesim.Traced.to_io_port
+    ; internal_signals =
+        List.map internal_signals ~f:(fun (signal, names) ->
+          { Cyclesim.Traced.signal; mangled_names = names })
+    }
   in
-  let lookup =
+  let lookup predicate =
     let map =
       List.fold
         handle.internal_getters
         ~init:(Map.empty (module Signal.Uid))
         ~f:(fun map (_, { signal; bits; update = _; aliases = _ }) ->
-          Map.add_exn map ~key:(Signal.uid signal) ~data:bits)
+          if predicate signal
+          then
+            Map.add_exn
+              map
+              ~key:(Signal.uid signal)
+              ~data:(Cyclesim.Node.create_from_bits_mutable bits)
+          else map)
     in
-    fun signal -> Map.find map (Signal.uid signal)
+    fun (traced : Cyclesim.Traced.internal_signal) ->
+      Map.find map (Signal.uid traced.signal)
   in
-  let lookup_reg s = Hashtbl.find internal_signals_table s in
-  let lookup_mem s =
+  let lookup_node =
+    lookup (fun s -> not (Signal.Type.is_mem s || Signal.Type.is_reg s))
+  in
+  let lookup_reg traced =
+    (* Register in verilator are read-only. *)
+    lookup Signal.Type.is_reg traced |> Option.map ~f:Cyclesim.Reg.read_only_of_node
+  in
+  let lookup_mem (traced : Cyclesim.Traced.internal_signal) =
     Hashtbl.find_and_call
       internal_memories_table_with_dynamic_lookup
-      s
+      (Signal.uid traced.signal)
       ~if_found:(fun (f, bits_array) ->
-        (* Only load the values of the memory needed. *)
+        (* Only load the values if needed. *)
         f ();
-        Some
-          (Array.map bits_array ~f:(fun bits ->
-             Bits.to_constant !bits |> Bits.Mutable.of_constant)))
+        Some (Cyclesim.Memory.create_from_read_only_bits_array bits_array))
       ~if_not_found:(Fn.const None)
   in
   Cyclesim.Private.create
@@ -756,10 +772,9 @@ let create
     ~cycle_at_clock_edge:(fun () -> !cycle_at_clock_edge ())
     ~cycle_after_clock_edge:(fun () -> !cycle_after_clock_edge ())
     ~traced
-    ~lookup
+    ~lookup_node
     ~lookup_reg
     ~lookup_mem
-    ~assertions:(Map.empty (module String))
     ()
 ;;
 
