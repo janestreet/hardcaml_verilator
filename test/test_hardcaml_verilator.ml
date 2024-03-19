@@ -77,7 +77,8 @@ let%expect_test "sequential" =
     [5 (before)] Value = 4
     [5 (after)] Value = 5
     [6 (before)] Value = 5
-    [6 (after)] Value = 6 |}]
+    [6 (after)] Value = 6
+    |}]
 ;;
 
 let%expect_test "cyclesim" =
@@ -299,7 +300,8 @@ let%expect_test "waveform with internal signals (state machine)" =
     ((value_before 0) (counter1_before 0) (counter2_before 0) (value_after 0)
      (counter1_after 1) (counter2_after 0))
     ((value_before 0) (counter1_before 1) (counter2_before 0) (value_after 1)
-     (counter1_after 0) (counter2_after 0)) |}];
+     (counter1_after 0) (counter2_after 0))
+    |}];
   Waveform.expect ~display_height:35 ~display_width:80 ~wave_width:1 waveform;
   [%expect
     {|
@@ -338,5 +340,6 @@ let%expect_test "waveform with internal signals (state machine)" =
     │vdd               ││────────────────────────────────────────────────          │
     │                  ││                                                          │
     └──────────────────┘└──────────────────────────────────────────────────────────┘
-    d45932c606eff424a4e4c1f15e414220 |}]
+    d45932c606eff424a4e4c1f15e414220
+    |}]
 ;;
