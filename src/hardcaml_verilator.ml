@@ -622,9 +622,14 @@ let create
       fun () ->
         fn ();
         let value = Bits.Mutable.to_bits bits in
-        let width = round_up_size (Bits.width value_array.(0)) in
+        let actual_width = Bits.width value_array.(0) in
+        let rounded_width = round_up_size actual_width in
         for i = 0 to Array.length value_array - 1 do
-          value_array.(i) <- Bits.select value ((width * (i + 1)) - 1) (width * i)
+          value_array.(i)
+            <- Bits.select
+                 value
+                 (actual_width + (rounded_width * i) - 1)
+                 (rounded_width * i)
         done)
   in
   let read_memories = make_read_memories internal_memories handle.internal_getters in
