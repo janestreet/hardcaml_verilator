@@ -1,3 +1,8 @@
+## Release v0.17.0
+
+* Add support for Verilator version 5. Support for version 4 is still maintained.
+* Support the new cyclesim APIs for looking up internal simulation nodes.
+
 ## Release v0.16.0
 
 * Provide read access to internal signals in verilator simulations.
