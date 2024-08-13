@@ -90,7 +90,7 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) : si
     : (clock_names:string list
        -> (Signal.t I.t -> Signal.t O.t)
        -> (Bits.t ref I.t, Bits.t ref O.t) Cyclesim.t)
-      with_options
+        with_options
 
   (** Compiles a circuit and returns the shared object which can later be passed as the
       [file_name] with Cache.Explicit to the [cache] input. *)

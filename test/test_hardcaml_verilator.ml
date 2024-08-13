@@ -16,7 +16,7 @@ let%expect_test "combinatorial and threaded" =
     let adder_output =
       let a = input "a" 16 in
       let b = input "b" 39 in
-      output "c" (a +: uresize b 16)
+      output "c" (a +: uresize b ~width:16)
     in
     Circuit.create_exn ~name:"adder" [ adder_output ]
   in
@@ -133,7 +133,7 @@ let%expect_test "cyclesim with interface" =
   in
   let create (i : _ I.t) =
     { O.hello = reg_fb ~width:16 (Reg_spec.create ~clock:i.clock ()) ~f:(fun x -> x +:. 1)
-    ; world = (i.foo +: uresize i.bar 16 +: Signal.(i.bar.:[45, 30]))
+    ; world = (i.foo +: uresize i.bar ~width:16 +: Signal.(i.bar.:[45, 30]))
     }
   in
   let module Sim = Hardcaml_verilator.With_interface (I) (O) in
@@ -342,4 +342,18 @@ let%expect_test "waveform with internal signals (state machine)" =
     └──────────────────┘└──────────────────────────────────────────────────────────┘
     d45932c606eff424a4e4c1f15e414220
     |}]
+;;
+
+(* When internal signals are enabled we look up some internal data structures of the
+   simulation object. They are named according to the [circuit_name]. Make sure that
+   it still works. *)
+let%expect_test "Supports topname properly" =
+  let module Sim = Hardcaml_verilator in
+  let i = input "i" 1 in
+  let n = ~:i -- "foo" in
+  let o = output "o" n in
+  let circ = Circuit.create_exn ~name:"blah" [ o ] in
+  ignore
+    (Sim.create ~config:Cyclesim.Config.trace_all ~clock_names:[] circ
+     : Cyclesim.t_port_list)
 ;;

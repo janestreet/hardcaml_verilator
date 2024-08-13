@@ -54,23 +54,23 @@ let test width =
     Vsim.create ~clock_names:[ "clock" ] ~config:Cyclesim.Config.trace_all create
   in
   (* read internal nodes *)
-  require_does_not_raise [%here] (fun () ->
+  require_does_not_raise (fun () ->
     let q_comb = Cyclesim.lookup_node_by_name sim "q_comb" |> Option.value_exn in
     assert (Bits.width (Cyclesim.Node.to_bits q_comb) = width));
   (* read internal regs *)
-  require_does_not_raise [%here] (fun () ->
+  require_does_not_raise (fun () ->
     let q_reg = Cyclesim.lookup_reg_by_name sim "q_reg" |> Option.value_exn in
     assert (Bits.width (Cyclesim.Reg.to_bits q_reg) = width));
   (* cannot write internal regs *)
-  require_does_raise [%here] (fun () ->
+  require_does_raise (fun () ->
     let q_reg = Cyclesim.lookup_reg_by_name sim "q_reg" |> Option.value_exn in
     Cyclesim.Reg.of_bits q_reg (Bits.of_int ~width 10));
   (* read internal memories *)
-  require_does_not_raise [%here] (fun () ->
+  require_does_not_raise (fun () ->
     let q_mem = Cyclesim.lookup_mem_by_name sim "q_mem" |> Option.value_exn in
     assert (Bits.width (Cyclesim.Memory.to_bits ~address:1 q_mem) = width));
   (* cannot write internal memories *)
-  require_does_raise [%here] (fun () ->
+  require_does_raise (fun () ->
     let q_mem = Cyclesim.lookup_mem_by_name sim "q_mem" |> Option.value_exn in
     Cyclesim.Memory.of_bits q_mem ~address:1 (Bits.of_int ~width 10))
 ;;

@@ -112,6 +112,10 @@ let output_addr_fn_name ~circuit_name ~port_name =
   sprintf "hardcaml_verilator_%s_%s_addr" circuit_name (sanitize_port_name port_name)
 ;;
 
+let internal_addr_fn_name ~circuit_name =
+  sprintf "hardcaml_verilator_%s_internal_variable_lookup_addr" circuit_name
+;;
+
 let internal_signals
   ?(verilog_name_by_id : Rtl.Signals_name_map.t option)
   circuit
@@ -128,19 +132,19 @@ let internal_signals
     in
     Signal_graph.filter (Circuit.signal_graph circuit) ~f:is_internal
     |> List.filter_map ~f:(fun signal ->
-         match Signal.names signal with
-         | [] -> None (* only use named internal signals *)
-         | names ->
-           let uid = Signal.uid signal in
-           let names =
-             match verilog_name_by_id with
-             | None -> names
-             | Some verilog_name_by_id ->
-               List.mapi names ~f:(fun idx _ ->
-                 let lookup = uid, idx in
-                 Map.find_exn verilog_name_by_id lookup)
-           in
-           Some (signal, names))
+      match Signal.names signal with
+      | [] -> None (* only use named internal signals *)
+      | names ->
+        let uid = Signal.uid signal in
+        let names =
+          match verilog_name_by_id with
+          | None -> names
+          | Some verilog_name_by_id ->
+            List.mapi names ~f:(fun idx _ ->
+              let lookup = uid, idx in
+              Map.find_exn verilog_name_by_id lookup)
+        in
+        Some (signal, names))
 ;;
 
 let[@inline always] ceil_div a b = if a % b = 0 then a / b else (a / b) + 1
@@ -157,6 +161,7 @@ let with_tmp_stdout ~verbose ~f =
 
 let run_command_exn ?(verbose = false) command =
   with_tmp_stdout ~verbose ~f:(fun tmp_stdout ->
+    if verbose then print_endline command;
     let command =
       match tmp_stdout with
       | Some tmp_stdout -> [%string "%{command} &>%{tmp_stdout}"]
@@ -181,10 +186,13 @@ let generate_cpp_wrapper
   let typ = "V" ^ circuit_name in
   bprintf buffer "#include <stdint.h>\n";
   bprintf buffer "#include \"verilated.h\"\n";
+  bprintf buffer "#include \"verilated_sym_props.h\"\n";
   bprintf buffer "#include \"V%s.h\"\n" circuit_name;
   let internal_signals = internal_signals circuit config ~verilog_name_by_id in
   if List.length internal_signals > 0
-  then bprintf buffer "#include \"V%s_%s.h\"\n" circuit_name circuit_name;
+  then (
+    bprintf buffer "#include \"V%s_%s.h\"\n" circuit_name circuit_name;
+    bprintf buffer "#include \"V%s__Syms.h\"\n" circuit_name);
   bprintf buffer "extern \"C\"{\n\n";
   let () =
     bprintf buffer "%s* %s(){\n" typ (init_name ~circuit_name);
@@ -220,20 +228,30 @@ let generate_cpp_wrapper
       typ;
     bprintf buffer "  return (char*) &(ptr->%s);\n" (sanitize_port_name port_name);
     bprintf buffer "}\n");
-  List.iter internal_signals ~f:(fun (_, port_names) ->
-    (* Only need to have a getter for one alias *)
-    let port_name = List.hd_exn port_names in
-    bprintf
-      buffer
-      "const char* %s(%s * ptr) {\n"
-      (output_addr_fn_name ~circuit_name ~port_name)
-      typ;
-    bprintf
-      buffer
-      "  return (char*) &(ptr->%s->%s);\n"
-      circuit_name
-      (sanitize_port_name port_name);
-    bprintf buffer "}\n");
+  let () =
+    match internal_signals with
+    | [] -> ()
+    | _ ->
+      bprintf
+        buffer
+        "char *%s(%s *ptr, char *p){\n"
+        (internal_addr_fn_name ~circuit_name)
+        typ;
+      bprintf
+        buffer
+        "  V%s_%s *%s = ptr->%s;\n"
+        circuit_name
+        circuit_name
+        circuit_name
+        circuit_name;
+      bprintf buffer "  V%s__Syms* vlSymsp = %s->vlSymsp;\n" circuit_name circuit_name;
+      bprintf
+        buffer
+        "  VerilatedVar *var = vlSymsp->__Vscope_%s.varFind(p);\n"
+        circuit_name;
+      bprintf buffer "  return (char *) var->datap();\n";
+      bprintf buffer "}\n"
+  in
   bprintf buffer "\n}\n"
 ;;
 
@@ -373,7 +391,7 @@ let create_foreign_bindings
                   ~value_width:(Bits.width bits : int)];
           copy_into_verilator (Bits.Expert.unsafe_underlying_repr bits) ))
   in
-  let init_getters bit_width ~port_name =
+  let init_getter bit_width ~port_name =
     let size = ceil_div bit_width 8 in
     let foreign_address =
       foreign
@@ -389,8 +407,32 @@ let create_foreign_bindings
     in
     port_name, copy_from_verilator
   in
+  let internal_getter_lookup =
+    lazy
+      (foreign
+         ?from
+         (internal_addr_fn_name ~circuit_name)
+         (ptr verilator_t @-> string @-> returning (ptr char))
+         verilator_ptr)
+  in
+  let internal_getter bit_width ~port_name =
+    let size = ceil_div bit_width 8 in
+    let addr_ptr = (Lazy.force internal_getter_lookup) port_name in
+    if Ctypes.is_null addr_ptr
+    then
+      raise_s
+        [%message
+          "Lookup of internal signal failed (we potentially dont have to fail here...)."
+            (port_name : string)];
+    let copy_from_verilator =
+      copy_to_bytes_from_bigstring
+        ~bit_width
+        ~src:(Ctypes.bigarray_of_ptr Ctypes.array1 size Bigarray.Char addr_ptr)
+    in
+    port_name, copy_from_verilator
+  in
   let bits_getters bit_width ~port_name =
-    let name, copy_from_verilator = init_getters bit_width ~port_name in
+    let name, copy_from_verilator = init_getter bit_width ~port_name in
     ( name
     , fun () ->
         let bits = Bits.of_int ~width:bit_width 0 in
@@ -398,7 +440,7 @@ let create_foreign_bindings
         bits )
   in
   let bits_mutable_getters signal bit_width ~port_name ~aliases =
-    let name, copy_from_verilator = init_getters bit_width ~port_name in
+    let name, copy_from_verilator = internal_getter bit_width ~port_name in
     let bits = Bits.Mutable.create bit_width in
     ( name
     , { signal
@@ -525,7 +567,7 @@ let compile_circuit_with_cache
       (* annotate all the signals that need to be exposed *)
       internal_signals circuit config
       |> List.iter ~f:(fun (s, _) ->
-           ignore (Signal.set_comment s "verilator public" : Signal.t));
+        ignore (Signal.set_comment s "verilator public" : Signal.t));
       let nm =
         Rtl.Expert.output_with_name_map
           ~output_mode:(Rtl.Output_mode.To_buffer buffer)
@@ -626,10 +668,7 @@ let create
         let rounded_width = round_up_size actual_width in
         for i = 0 to Array.length value_array - 1 do
           value_array.(i)
-            <- Bits.select
-                 value
-                 (actual_width + (rounded_width * i) - 1)
-                 (rounded_width * i)
+          <- value.Bits.:[actual_width + (rounded_width * i) - 1, rounded_width * i]
         done)
   in
   let read_memories = make_read_memories internal_memories handle.internal_getters in

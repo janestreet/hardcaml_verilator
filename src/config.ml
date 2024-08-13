@@ -142,7 +142,6 @@ let make_compilation_command ~circuit_name ~obj_dir t =
   let { make_envvars; make_jobs } = make_flags t in
   (* OBJCACHE controls the use of ccache. If it is not present, then by default ccache
      gets used, which we dont want.
-
      The semantics here are to use OBJCACHE if set, otherwise set it to nothing (but
      actually set it) so no caching is performed. *)
   let objcache = Option.value ~default:"" (Sys.getenv "OBJCACHE") in
@@ -160,7 +159,7 @@ let make_compilation_command ~circuit_name ~obj_dir t =
 
 let final_link_command ~obj_dir ~path_to_shared_lib ~path_to_static_lib t =
   sprintf
-    "g++ -lpthread -fPIC %s -g -shared -o %s %s %s"
+    "g++ -latomic -lpthread -fPIC %s -g -shared -o %s %s %s"
     (optimization_flag t)
     path_to_shared_lib
     (String.concat
