@@ -129,8 +129,8 @@ let verilator_compilation_command
   =
   let verilator_flags = verilator_flags t ~circuit_name in
   sprintf
-    "CXXFLAGS=\"-fPIC\" %s %s -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED --cc %s  --Mdir \
-     %s %s"
+    "CXXFLAGS=\"-fPIC\" %s %s -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED -Wno-INITIALDLY \
+     --cc %s  --Mdir %s %s"
     (Option.value ~default:(executable t) exe)
     verilator_flags
     path_to_verilog
