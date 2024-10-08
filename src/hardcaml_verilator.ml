@@ -569,10 +569,7 @@ let compile_circuit_with_cache
       |> List.iter ~f:(fun (s, _) ->
         ignore (Signal.set_comment s "verilator public" : Signal.t));
       let nm =
-        Rtl.Expert.output_with_name_map
-          ~output_mode:(Rtl.Output_mode.To_buffer buffer)
-          Verilog
-          circuit
+        Rtl.Expert.output ~output_mode:(Rtl.Output_mode.To_buffer buffer) Verilog circuit
       in
       buffer, nm
     in
