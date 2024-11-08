@@ -44,7 +44,7 @@ let test width =
            |]
          ~read_addresses:[| ra |]).(0)
     in
-    let q = q +:. 10 -- "q_comb" in
+    let q = q +:. 1 -- "q_comb" in
     let q = reg spec q -- "q_reg" in
     { O.q }
   in

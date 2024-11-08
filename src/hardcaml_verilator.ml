@@ -495,7 +495,7 @@ let create_foreign_bindings_from_dllib circuit path_to_shared_lib internal_signa
         [%message "Could not find verilator shared library" (path_to_shared_lib : string)]
   in
   let dllib = Dl.dlopen ~filename ~flags:[ RTLD_NOW ] in
-  create_foreign_bindings ~from:dllib circuit internal_signals
+  Staged.stage (fun () -> create_foreign_bindings ~from:dllib circuit internal_signals)
 ;;
 
 let compile_circuit
@@ -569,10 +569,7 @@ let compile_circuit_with_cache
       |> List.iter ~f:(fun (s, _) ->
         ignore (Signal.set_comment s "verilator public" : Signal.t));
       let nm =
-        Rtl.Expert.output_with_name_map
-          ~output_mode:(Rtl.Output_mode.To_buffer buffer)
-          Verilog
-          circuit
+        Rtl.Expert.output ~output_mode:(Rtl.Output_mode.To_buffer buffer) Verilog circuit
       in
       buffer, nm
     in
@@ -622,154 +619,147 @@ let compile_circuit_and_load_shared_object
   let shared_lib, internal_signals =
     compile_circuit_with_cache ?cache ?build_dir ?verilator_config ~config circuit
   in
-  create_foreign_bindings_from_dllib circuit shared_lib internal_signals
+  let create_bindings =
+    Staged.unstage
+      (create_foreign_bindings_from_dllib circuit shared_lib internal_signals)
+  in
+  create_bindings ()
 ;;
 
-let create
-  ?cache
-  ?build_dir
-  ?verilator_config
-  ?(config = Cyclesim.Config.default)
-  ~clock_names
-  circuit
-  =
-  let shared_object, (internal_signals : (Signal.t * string list) List.t) =
-    compile_circuit_with_cache ?cache ?build_dir ?verilator_config ~config circuit
-  in
+let find_internal_memories (internal_signals : (Signal.t * string list) list) =
+  List.filter_map internal_signals ~f:(fun (s, names) ->
+    match s with
+    | Multiport_mem { size; _ } ->
+      Some
+        (List.map names ~f:(fun n ->
+           n, s, Array.init size ~f:(fun _ -> Bits.of_int ~width:(Signal.width s) 0)))
+    | _ -> None)
+  |> List.concat
+;;
+
+type ports_and_memories =
+  { in_ports : (string * Bits.t ref) list
+  ; out_ports_before_clock_edge : (string * Bits.t ref) list
+  ; out_ports_after_clock_edge : (string * Bits.t ref) list
+  ; internal_memories : (string * Signal.t * Bits.t array) list
+  }
+
+let make_ports_and_memories circuit internal_signals =
   let make_port_list signals =
     List.map signals ~f:(fun s ->
       List.hd_exn (Signal.names s), ref (Bits.of_int ~width:(Signal.width s) 0))
   in
-  let in_ports = make_port_list (Circuit.inputs circuit) in
-  let internal_memories =
-    List.filter_map internal_signals ~f:(fun (s, names) ->
-      match s with
-      | Multiport_mem { size; _ } ->
-        Some
-          (List.map names ~f:(fun n ->
-             n, s, Array.init size ~f:(fun _ -> Bits.of_int ~width:(Signal.width s) 0)))
-      | _ -> None)
-    |> List.concat
+  { in_ports = make_port_list (Circuit.inputs circuit)
+  ; out_ports_before_clock_edge = make_port_list (Circuit.outputs circuit)
+  ; out_ports_after_clock_edge = make_port_list (Circuit.outputs circuit)
+  ; internal_memories = find_internal_memories internal_signals
+  }
+;;
+
+let make_read_memories (handle : t) ~ports_and_memories:{ internal_memories; _ } =
+  List.map internal_memories ~f:(fun (name, _, value_array) ->
+    let { signal = _; bits; update = fn; aliases = _ } =
+      handle.internal_getters
+      |> List.find_exn ~f:(fun a -> String.equal (fst a) name)
+      |> snd
+    in
+    fun () ->
+      fn ();
+      let value = Bits.Mutable.to_bits bits in
+      let actual_width = Bits.width value_array.(0) in
+      let rounded_width = round_up_size actual_width in
+      for i = 0 to Array.length value_array - 1 do
+        value_array.(i)
+        <- value.Bits.:[actual_width + (rounded_width * i) - 1, rounded_width * i]
+      done)
+;;
+
+let make_cycle_functions
+  (handle : t)
+  ~clock_names
+  ~ports_and_memories:
+    { in_ports; out_ports_before_clock_edge; out_ports_after_clock_edge; _ }
+  =
+  let make_read_outputs out_ports getters =
+    List.map out_ports ~f:(fun (name, value_ref) ->
+      let fn = getters |> List.find_exn ~f:(fun a -> String.equal (fst a) name) |> snd in
+      fun () -> value_ref := fn ())
   in
-  let out_ports_before_clock_edge = make_port_list (Circuit.outputs circuit) in
-  let out_ports_after_clock_edge = make_port_list (Circuit.outputs circuit) in
-  let handle =
-    create_foreign_bindings_from_dllib circuit shared_object internal_signals
+  let make_read_internals getters =
+    List.filter_map getters ~f:(fun (_, { signal; bits = _; update; aliases = _ }) ->
+      if Signal.Type.is_mem signal then None else Some update)
   in
-  let make_read_memories memory_ports getters : (unit -> unit) list =
-    List.map memory_ports ~f:(fun (name, _, value_array) ->
-      let { signal = _; bits; update = fn; aliases = _ } =
-        getters |> List.find_exn ~f:(fun a -> String.equal (fst a) name) |> snd
+  let make_read_inputs in_ports =
+    List.map in_ports ~f:(fun (name, value_ref) ->
+      let fn =
+        handle.input_setters
+        |> List.find_exn ~f:(fun a -> String.equal (fst a) name)
+        |> snd
       in
-      fun () ->
-        fn ();
-        let value = Bits.Mutable.to_bits bits in
-        let actual_width = Bits.width value_array.(0) in
-        let rounded_width = round_up_size actual_width in
-        for i = 0 to Array.length value_array - 1 do
-          value_array.(i)
-          <- value.Bits.:[actual_width + (rounded_width * i) - 1, rounded_width * i]
-        done)
+      fun () -> fn value_ref.contents)
   in
-  let read_memories = make_read_memories internal_memories handle.internal_getters in
-  let make_cycle_functions () =
-    let make_read_outputs out_ports getters =
-      List.map out_ports ~f:(fun (name, value_ref) ->
-        let fn =
-          getters |> List.find_exn ~f:(fun a -> String.equal (fst a) name) |> snd
-        in
-        fun () -> value_ref := fn ())
+  let clocks =
+    let in_ports = String.Map.of_alist_exn in_ports in
+    List.filter_map clock_names ~f:(fun name ->
+      let%map.Option setter =
+        List.find handle.input_setters ~f:(fun (a, _) -> String.equal a name)
+      in
+      let setter = snd setter in
+      let width = Bits.width !(Map.find_exn in_ports name) in
+      let gnd = Bits.zero width in
+      let vdd = Bits.ones width in
+      function
+      | `Gnd -> setter gnd
+      | `Vdd -> setter vdd)
+  in
+  let cycle_at_clock_edge () =
+    List.iter clocks ~f:(fun f -> f `Gnd);
+    handle.eval ();
+    List.iter clocks ~f:(fun f -> f `Vdd);
+    handle.eval ()
+  in
+  let cycle_before_clock_edge =
+    let set_inputs = make_read_inputs in_ports in
+    let read_internals = make_read_internals handle.internal_getters in
+    let read_outputs =
+      make_read_outputs out_ports_before_clock_edge handle.output_getters
     in
-    let make_read_internals getters =
-      List.filter_map getters ~f:(fun (_, { signal; bits = _; update; aliases = _ }) ->
-        if Signal.Type.is_mem signal then None else Some update)
-    in
-    let make_read_inputs in_ports =
-      List.map in_ports ~f:(fun (name, value_ref) ->
-        let fn =
-          handle.input_setters
-          |> List.find_exn ~f:(fun a -> String.equal (fst a) name)
-          |> snd
-        in
-        fun () -> fn value_ref.contents)
-    in
-    let clocks =
-      let in_ports = String.Map.of_alist_exn in_ports in
-      List.filter_map clock_names ~f:(fun name ->
-        let%map.Option setter =
-          List.find handle.input_setters ~f:(fun (a, _) -> String.equal a name)
-        in
-        let setter = snd setter in
-        let width = Bits.width !(Map.find_exn in_ports name) in
-        let gnd = Bits.zero width in
-        let vdd = Bits.ones width in
-        function
-        | `Gnd -> setter gnd
-        | `Vdd -> setter vdd)
-    in
-    let cycle_at_clock_edge () =
-      List.iter clocks ~f:(fun f -> f `Gnd);
+    fun () ->
+      List.iter set_inputs ~f:(fun f -> f ());
       handle.eval ();
-      List.iter clocks ~f:(fun f -> f `Vdd);
-      handle.eval ()
-    in
-    let cycle_before_clock_edge =
-      let set_inputs = make_read_inputs in_ports in
-      let read_internals = make_read_internals handle.internal_getters in
-      let read_outputs =
-        make_read_outputs out_ports_before_clock_edge handle.output_getters
-      in
-      fun () ->
-        List.iter set_inputs ~f:(fun f -> f ());
-        handle.eval ();
-        List.iter read_outputs ~f:(fun f -> f ());
-        List.iter read_internals ~f:(fun f -> f ())
-    in
-    let cycle_after_clock_edge =
-      let read_outputs =
-        make_read_outputs out_ports_after_clock_edge handle.output_getters
-      in
-      fun () -> List.iter read_outputs ~f:(fun f -> f ())
-    in
-    let complete = handle.complete in
-    cycle_before_clock_edge, cycle_at_clock_edge, cycle_after_clock_edge, complete
+      List.iter read_outputs ~f:(fun f -> f ());
+      List.iter read_internals ~f:(fun f -> f ())
   in
-  let cycle_before_clock_edge, cycle_at_clock_edge, cycle_after_clock_edge, complete =
-    make_cycle_functions ()
-  in
-  let cycle_before_clock_edge = ref cycle_before_clock_edge in
-  let cycle_after_clock_edge = ref cycle_after_clock_edge in
-  let cycle_at_clock_edge = ref cycle_at_clock_edge in
-  let complete = ref complete in
-  let reset () =
-    !complete ();
-    let ( new_cycle_before_clock_edge
-        , new_cycle_at_clock_edge
-        , new_cycle_after_clock_edge
-        , new_complete )
-      =
-      make_cycle_functions ()
+  let cycle_after_clock_edge =
+    let read_outputs =
+      make_read_outputs out_ports_after_clock_edge handle.output_getters
     in
-    cycle_after_clock_edge := new_cycle_after_clock_edge;
-    cycle_before_clock_edge := new_cycle_before_clock_edge;
-    cycle_at_clock_edge := new_cycle_at_clock_edge;
-    complete := new_complete
+    fun () -> List.iter read_outputs ~f:(fun f -> f ())
   in
-  let cycle_check () = () in
+  let complete = handle.complete in
+  cycle_before_clock_edge, cycle_at_clock_edge, cycle_after_clock_edge, complete
+;;
+
+let make_traced circuit internal_signals =
+  { Cyclesim.Traced.input_ports =
+      List.map (Circuit.inputs circuit) ~f:Cyclesim.Traced.to_io_port
+  ; output_ports = List.map (Circuit.outputs circuit) ~f:Cyclesim.Traced.to_io_port
+  ; internal_signals =
+      List.map internal_signals ~f:(fun (signal, names) ->
+        { Cyclesim.Traced.signal; mangled_names = names })
+  }
+;;
+
+let make_lookup_functions
+  (handle : t)
+  ~read_memories
+  ~ports_and_memories:{ internal_memories; _ }
+  =
   let internal_memories_table_with_dynamic_lookup =
     Hashtbl.of_alist_exn
       (module Signal.Uid)
       (List.map2_exn read_memories internal_memories ~f:(fun f (_, s, bits) ->
          Signal.uid s, (f, bits)))
-  in
-  let traced =
-    { Cyclesim.Traced.input_ports =
-        List.map (Circuit.inputs circuit) ~f:Cyclesim.Traced.to_io_port
-    ; output_ports = List.map (Circuit.outputs circuit) ~f:Cyclesim.Traced.to_io_port
-    ; internal_signals =
-        List.map internal_signals ~f:(fun (signal, names) ->
-          { Cyclesim.Traced.signal; mangled_names = names })
-    }
   in
   let lookup predicate =
     let map =
@@ -805,20 +795,75 @@ let create
         Some (Cyclesim.Memory.create_from_read_only_bits_array bits_array))
       ~if_not_found:(Fn.const None)
   in
+  lookup_node, lookup_reg, lookup_mem
+;;
+
+type simulator_state_functions =
+  { cycle_before_clock_edge : unit -> unit
+  ; cycle_at_clock_edge : unit -> unit
+  ; cycle_after_clock_edge : unit -> unit
+  ; lookup_node : Cyclesim.Traced.internal_signal -> Cyclesim.Node.t option
+  ; lookup_reg : Cyclesim.Traced.internal_signal -> Cyclesim.Reg.t option
+  ; lookup_mem : Cyclesim.Traced.internal_signal -> Cyclesim.Memory.t option
+  ; complete : unit -> unit
+  }
+
+let make_simulator_state_functions handle ~clock_names ~ports_and_memories =
+  let read_memories = make_read_memories handle ~ports_and_memories in
+  let cycle_before_clock_edge, cycle_at_clock_edge, cycle_after_clock_edge, complete =
+    make_cycle_functions handle ~clock_names ~ports_and_memories
+  in
+  let lookup_node, lookup_reg, lookup_mem =
+    make_lookup_functions handle ~read_memories ~ports_and_memories
+  in
+  { cycle_before_clock_edge
+  ; cycle_at_clock_edge
+  ; cycle_after_clock_edge
+  ; lookup_node
+  ; lookup_reg
+  ; lookup_mem
+  ; complete
+  }
+;;
+
+let create
+  ?cache
+  ?build_dir
+  ?verilator_config
+  ?(config = Cyclesim.Config.default)
+  ~clock_names
+  circuit
+  =
+  let shared_object, (internal_signals : (Signal.t * string list) List.t) =
+    compile_circuit_with_cache ?cache ?build_dir ?verilator_config ~config circuit
+  in
+  let ports_and_memories = make_ports_and_memories circuit internal_signals in
+  let create_handle =
+    Staged.unstage
+      (create_foreign_bindings_from_dllib circuit shared_object internal_signals)
+  in
+  let create_fresh_state () =
+    make_simulator_state_functions (create_handle ()) ~clock_names ~ports_and_memories
+  in
+  let state = ref (create_fresh_state ()) in
+  let reset () =
+    !state.complete ();
+    state := create_fresh_state ()
+  in
   Cyclesim.Private.create
     ?circuit:(if config.store_circuit then Some circuit else None)
-    ~in_ports
-    ~out_ports_before_clock_edge
-    ~out_ports_after_clock_edge
+    ~in_ports:ports_and_memories.in_ports
+    ~out_ports_before_clock_edge:ports_and_memories.out_ports_before_clock_edge
+    ~out_ports_after_clock_edge:ports_and_memories.out_ports_after_clock_edge
     ~reset
-    ~cycle_check
-    ~cycle_before_clock_edge:(fun () -> !cycle_before_clock_edge ())
-    ~cycle_at_clock_edge:(fun () -> !cycle_at_clock_edge ())
-    ~cycle_after_clock_edge:(fun () -> !cycle_after_clock_edge ())
-    ~traced
-    ~lookup_node
-    ~lookup_reg
-    ~lookup_mem
+    ~cycle_check:Fn.id
+    ~cycle_before_clock_edge:(fun () -> !state.cycle_before_clock_edge ())
+    ~cycle_at_clock_edge:(fun () -> !state.cycle_at_clock_edge ())
+    ~cycle_after_clock_edge:(fun () -> !state.cycle_after_clock_edge ())
+    ~traced:(make_traced circuit internal_signals)
+    ~lookup_node:(fun s -> !state.lookup_node s)
+    ~lookup_reg:(fun s -> !state.lookup_reg s)
+    ~lookup_mem:(fun s -> !state.lookup_mem s)
     ()
 ;;
 

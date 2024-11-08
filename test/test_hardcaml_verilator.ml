@@ -89,14 +89,12 @@ let%expect_test "cyclesim" =
   let bar = output "bar" (reg (Reg_spec.create ~clock ()) ~enable:vdd (a +: b)) in
   let circuit = Circuit.create_exn ~name:"adder" [ foo; bar ] in
   let sim = Hardcaml_verilator.create ~clock_names:[ "clk" ] circuit in
-  let () =
+  let test () =
     let inputs = Cyclesim.inputs sim in
     let find name = List.find_exn inputs ~f:(fun a -> String.equal name (fst a)) |> snd in
     find "a" := Bits.of_int ~width:16 10;
-    find "b" := Bits.of_int ~width:16 20
-  in
-  Cyclesim.cycle sim;
-  let () =
+    find "b" := Bits.of_int ~width:16 20;
+    Cyclesim.cycle sim;
     let find clock_edge name =
       let outputs = Cyclesim.outputs ~clock_edge sim in
       (List.find_exn outputs ~f:(fun a -> String.equal name (fst a)) |> snd).contents
@@ -109,7 +107,13 @@ let%expect_test "cyclesim" =
     print_s
       [%message (foo_before : int) (bar_before : int) (foo_after : int) (bar_after : int)]
   in
-  ();
+  test ();
+  [%expect {| ((foo_before 30) (bar_before 0) (foo_after 30) (bar_after 30)) |}];
+  test ();
+  [%expect {| ((foo_before 30) (bar_before 30) (foo_after 30) (bar_after 30)) |}];
+  (* Reset brings us back to the initial state. *)
+  Cyclesim.reset sim;
+  test ();
   [%expect {| ((foo_before 30) (bar_before 0) (foo_after 30) (bar_after 30)) |}]
 ;;
 
@@ -163,7 +167,7 @@ let%expect_test "cyclesim with interface" =
    | Ok () -> ()
    | Error e -> raise_s [%message (e : Core_unix.Exit_or_signal.error)]);
   [%expect
-    {| 85d991dfd5fc815878429da436b66800-V5-O3-procs1-threads1-perfile0-perfunc0.so |}]
+    {| c8e5601e4aa8d48e281cbc1dd3e2e441-V5-O3-procs1-threads1-perfile0-perfunc0.so |}]
 ;;
 
 let%expect_test "test all port sizes" =
@@ -356,4 +360,79 @@ let%expect_test "Supports topname properly" =
   ignore
     (Sim.create ~config:Cyclesim.Config.trace_all ~clock_names:[] circ
      : Cyclesim.t_port_list)
+;;
+
+let%expect_test "initial values" =
+  let clock = input "clock" 1 in
+  let data_width = 8 in
+  let address_width = 3 in
+  let size = 1 lsl address_width in
+  let read_address =
+    (* Start a counter at 2 *)
+    reg_fb
+      (Reg_spec.create ~clock ())
+      ~initialize_to:(Signal.of_int ~width:address_width 2)
+      ~width:address_width
+      ~f:(fun d -> d +:. 1)
+  in
+  let ports =
+    multiport_memory
+      size
+      ~write_ports:
+        [| { Write_port.write_clock = clock
+           ; write_address = input "write_address" address_width
+           ; write_data = input "write_data" data_width
+           ; write_enable = input "write_enable" 1
+           }
+        |]
+      ~read_addresses:[| read_address |]
+      ~initialize_to:(Array.init size ~f:(Bits.of_int ~width:data_width))
+  in
+  let circ = Circuit.create_exn ~name:"test" [ output "q" ports.(0) ] in
+  let sim = Hardcaml_verilator.create ~clock_names:[ "clock" ] circ in
+  let waves, sim = Hardcaml_waveterm.Waveform.create sim in
+  for _ = 0 to 1 do
+    Cyclesim.cycle sim
+  done;
+  Cyclesim.in_port sim "write_enable" := Bits.vdd;
+  Cyclesim.in_port sim "write_data" := Bits.ones data_width;
+  Cyclesim.in_port sim "write_address" := Bits.of_int ~width:address_width 6;
+  Cyclesim.cycle sim;
+  Cyclesim.in_port sim "write_enable" := Bits.gnd;
+  for _ = 0 to 5 do
+    Cyclesim.cycle sim
+  done;
+  Hardcaml_waveterm.Waveform.print
+    ~display_rules:
+      [ Hardcaml_waveterm.Display_rule.port_name_matches
+          Re.Posix.(compile (re ".*"))
+          ~wave_format:(Bit_or Unsigned_int)
+          ~alignment:Right
+      ]
+    waves
+    ~wave_width:2
+    ~display_height:20;
+  [%expect
+    {|
+    ┌Signals────────┐┌Waves──────────────────────────────────────────────┐
+    │clock          ││┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──│
+    │               ││   └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  │
+    │               ││────────────┬──────────────────────────────────────│
+    │write_address  ││ 0          │6                                     │
+    │               ││────────────┴──────────────────────────────────────│
+    │               ││────────────┬──────────────────────────────────────│
+    │write_data     ││ 0          │255                                   │
+    │               ││────────────┴──────────────────────────────────────│
+    │write_enable   ││            ┌─────┐                                │
+    │               ││────────────┘     └────────────────────────────────│
+    │               ││──────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬──│
+    │q              ││ 2    │3    │4    │5    │255  │7    │0    │1    │2 │
+    │               ││──────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴──│
+    │               ││                                                   │
+    │               ││                                                   │
+    │               ││                                                   │
+    │               ││                                                   │
+    │               ││                                                   │
+    └───────────────┘└───────────────────────────────────────────────────┘
+    |}]
 ;;
