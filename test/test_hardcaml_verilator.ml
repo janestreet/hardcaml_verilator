@@ -89,14 +89,12 @@ let%expect_test "cyclesim" =
   let bar = output "bar" (reg (Reg_spec.create ~clock ()) ~enable:vdd (a +: b)) in
   let circuit = Circuit.create_exn ~name:"adder" [ foo; bar ] in
   let sim = Hardcaml_verilator.create ~clock_names:[ "clk" ] circuit in
-  let () =
+  let test () =
     let inputs = Cyclesim.inputs sim in
     let find name = List.find_exn inputs ~f:(fun a -> String.equal name (fst a)) |> snd in
     find "a" := Bits.of_int ~width:16 10;
-    find "b" := Bits.of_int ~width:16 20
-  in
-  Cyclesim.cycle sim;
-  let () =
+    find "b" := Bits.of_int ~width:16 20;
+    Cyclesim.cycle sim;
     let find clock_edge name =
       let outputs = Cyclesim.outputs ~clock_edge sim in
       (List.find_exn outputs ~f:(fun a -> String.equal name (fst a)) |> snd).contents
@@ -109,7 +107,13 @@ let%expect_test "cyclesim" =
     print_s
       [%message (foo_before : int) (bar_before : int) (foo_after : int) (bar_after : int)]
   in
-  ();
+  test ();
+  [%expect {| ((foo_before 30) (bar_before 0) (foo_after 30) (bar_after 30)) |}];
+  test ();
+  [%expect {| ((foo_before 30) (bar_before 30) (foo_after 30) (bar_after 30)) |}];
+  (* Reset brings us back to the initial state. *)
+  Cyclesim.reset sim;
+  test ();
   [%expect {| ((foo_before 30) (bar_before 0) (foo_after 30) (bar_after 30)) |}]
 ;;
 
