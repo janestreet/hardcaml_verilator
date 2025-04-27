@@ -11,7 +11,8 @@ type t =
 [@@deriving sexp_of]
 
 let default =
-  { verilator_version = Verilator_version.of_int Setup.default_version
+  { verilator_version =
+      Verilator_version.of_int Hardcaml.Tools_config.default_verilator_version
   ; optimization_level = O3
   ; compilation_processes = Threads.create 1
   ; runtime_threads = Threads.create 1
@@ -21,7 +22,8 @@ let default =
 ;;
 
 let small_cfiles =
-  { verilator_version = Verilator_version.of_int Setup.default_version
+  { verilator_version =
+      Verilator_version.of_int Hardcaml.Tools_config.default_verilator_version
   ; optimization_level = O3
   ; compilation_processes = Threads.create 1
   ; runtime_threads = Threads.create 1
@@ -50,8 +52,8 @@ let label t =
 
 let executable t =
   match t.verilator_version with
-  | V4 -> Setup.verilator_v4
-  | V5 -> Setup.verilator_v5
+  | V4 -> Hardcaml.Tools_config.verilator_v4
+  | V5 -> Hardcaml.Tools_config.verilator_v5
 ;;
 
 let flag =
@@ -130,7 +132,7 @@ let verilator_compilation_command
   let verilator_flags = verilator_flags t ~circuit_name in
   sprintf
     "CXXFLAGS=\"-fPIC\" %s %s -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED -Wno-INITIALDLY \
-     --cc %s  --Mdir %s %s"
+     -Wno-MULTIDRIVEN --cc %s  --Mdir %s %s"
     (Option.value ~default:(executable t) exe)
     verilator_flags
     path_to_verilog

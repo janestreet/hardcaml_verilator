@@ -17,7 +17,10 @@ let of_int version =
 let flag =
   [%map_open.Command
     let version =
-      flag "-V" (optional_with_default Setup.default_version int) ~doc:"Verilator version"
+      flag
+        "-V"
+        (optional_with_default Hardcaml.Tools_config.default_verilator_version int)
+        ~doc:"Verilator version"
     in
     of_int version]
 ;;

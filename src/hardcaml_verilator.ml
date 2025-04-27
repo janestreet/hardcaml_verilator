@@ -1,5 +1,6 @@
 open Core
 open Hardcaml
+module Ctypes = Ctypes [@@alert "-deprecated"]
 open Ctypes
 open Ctypes_foreign_flat
 open Foreign
@@ -13,7 +14,10 @@ module Config = Config
 module Cache = struct
   type t =
     | No_cache
-    | Hashed of { cache_dir : string }
+    | Hashed of
+        { cache_dir : string
+        ; raise_if_not_found : bool
+        }
     | Explicit of { file_name : string }
   [@@deriving sexp, bin_io]
 end
@@ -47,7 +51,8 @@ module Simulation_backend = struct
       then (
         match verilator_cache_dir, file_name with
         | None, None -> Verilator No_cache
-        | Some cache_dir, None -> Verilator (Hashed { cache_dir })
+        | Some cache_dir, None ->
+          Verilator (Hashed { cache_dir; raise_if_not_found = false })
         | None, Some file_name -> Verilator (Explicit { file_name })
         | Some _, Some _ ->
           raise_s
@@ -69,10 +74,16 @@ let verilator_t : [ `verilator ] structure typ = structure "verilator"
 type input_port = Bits.t -> unit
 type output_port = unit -> Bits.t
 
+type internal_getter =
+  | Signal of
+      { bits : Bits.Mutable.t
+      ; update : unit -> unit
+      }
+  | Memory of { unsafe_get64 : address:int -> int -> int64 }
+
 type internal_port =
   { signal : Signal.t
-  ; bits : Bits.Mutable.t
-  ; update : unit -> unit
+  ; getter : internal_getter
   ; aliases : string list
   }
 
@@ -117,7 +128,7 @@ let internal_addr_fn_name ~circuit_name =
 ;;
 
 let internal_signals
-  ?(verilog_name_by_id : Rtl.Signals_name_map.t option)
+  ?(verilog_name_by_id : Rtl.Ast.Signals_name_map.t option)
   circuit
   (config : Cyclesim.Config.t)
   =
@@ -180,7 +191,7 @@ let generate_cpp_wrapper
   buffer
   (circuit : Circuit.t)
   (config : Cyclesim.Config.t)
-  (verilog_name_by_id : Rtl.Signals_name_map.t)
+  (verilog_name_by_id : Rtl.Ast.Signals_name_map.t)
   =
   let circuit_name = Circuit.name circuit in
   let typ = "V" ^ circuit_name in
@@ -249,7 +260,11 @@ let generate_cpp_wrapper
         buffer
         "  VerilatedVar *var = vlSymsp->__Vscope_%s.varFind(p);\n"
         circuit_name;
+      bprintf buffer " if (var != NULL) {\n";
       bprintf buffer "  return (char *) var->datap();\n";
+      bprintf buffer " } else {\n";
+      bprintf buffer "  return NULL;\n";
+      bprintf buffer "};\n";
       bprintf buffer "}\n"
   in
   bprintf buffer "\n}\n"
@@ -337,24 +352,9 @@ let copy_to_bytes_from_bigstring ~bit_width ~src =
         ~len:num_bytes)
 ;;
 
-(* When converting bit widths from memory we need to round up each memory slot's bit_width
-   to read correctly.
-
-   Signals are the smallest of 8-bit unsigned chars (equivalent to uint8_t), 16-bit
-   unsigned shorts (uint16_t), 32-bit unsigned longs (uint32_t), or 64-bit unsigned long
-   longs (uint64_t) that fits the width of the signal. Signals wider than 64 bits are
-   stored as an array of 32-bit uint32_t’s.
-*)
-let round_up_size i =
-  if i <= 8
-  then Int.round_up i ~to_multiple_of:8
-  else if i <= 16
-  then Int.round_up i ~to_multiple_of:16
-  else Int.round_up i ~to_multiple_of:32
-;;
-
 let create_foreign_bindings
   ?from
+  ~verbose
   (circuit : Circuit.t)
   (internal_signals : (Signal.t * string list) list)
   =
@@ -415,19 +415,30 @@ let create_foreign_bindings
          (ptr verilator_t @-> string @-> returning (ptr char))
          verilator_ptr)
   in
+  let to_verilator_vpi_name name =
+    (* Empirically, the observed behavior is that 'hierarchical' names with a '$' is
+       represented as an escaped identifier (SystemVerilog LRM 5.6.1), and other top-level
+       names are reprseented normally. *)
+    if String.exists name ~f:(Char.( = ) '$') then [%string "\\%{name} "] else name
+  in
   let internal_getter bit_width ~port_name =
     let size = ceil_div bit_width 8 in
-    let addr_ptr = (Lazy.force internal_getter_lookup) port_name in
-    if Ctypes.is_null addr_ptr
-    then
-      raise_s
-        [%message
-          "Lookup of internal signal failed (we potentially dont have to fail here...)."
-            (port_name : string)];
+    let name = to_verilator_vpi_name port_name in
+    let addr_ptr = (Lazy.force internal_getter_lookup) name in
     let copy_from_verilator =
-      copy_to_bytes_from_bigstring
-        ~bit_width
-        ~src:(Ctypes.bigarray_of_ptr Ctypes.array1 size Bigarray.Char addr_ptr)
+      (* If we couldn't find the node just don't update - usually the case when the shared
+         object wasn't generated with the correct annotations. *)
+      if Ctypes.is_null addr_ptr
+      then (
+        if verbose
+        then
+          print_s
+            [%message "Can't find node in verilator, it won't be traced" (name : string)];
+        Fn.const ())
+      else
+        copy_to_bytes_from_bigstring
+          ~bit_width
+          ~src:(Ctypes.bigarray_of_ptr Ctypes.array1 size Bigarray.Char addr_ptr)
     in
     port_name, copy_from_verilator
   in
@@ -435,19 +446,84 @@ let create_foreign_bindings
     let name, copy_from_verilator = init_getter bit_width ~port_name in
     ( name
     , fun () ->
-        let bits = Bits.of_int ~width:bit_width 0 in
+        let bits = Bits.zero bit_width in
         copy_from_verilator (Bits.Expert.unsafe_underlying_repr bits);
         bits )
   in
-  let bits_mutable_getters signal bit_width ~port_name ~aliases =
-    let name, copy_from_verilator = internal_getter bit_width ~port_name in
-    let bits = Bits.Mutable.create bit_width in
+  let bits_mutable_getters signal ~port_name ~aliases =
+    let width = Signal.width signal in
+    let name, copy_from_verilator = internal_getter width ~port_name in
+    let bits = Bits.Mutable.create width in
     ( name
     , { signal
-      ; bits
-      ; update = (fun () -> copy_from_verilator (bits :> Bytes.t))
+      ; getter =
+          Signal { bits; update = (fun () -> copy_from_verilator (bits :> Bytes.t)) }
       ; aliases
       } )
+  in
+  let memory_mutable_getters signal ~size ~port_name ~aliases =
+    let name = to_verilator_vpi_name port_name in
+    let addr_ptr = (Lazy.force internal_getter_lookup) name in
+    (* When converting bit widths from memory we need to round up each memory slot's bit_width
+       to read correctly.
+
+       Signals are the smallest of 8-bit unsigned chars (equivalent to uint8_t), 16-bit
+       unsigned shorts (uint16_t), 32-bit unsigned longs (uint32_t), or 64-bit unsigned long
+       longs (uint64_t) that fits the width of the signal. Signals wider than 64 bits are
+       stored as an array of 32-bit uint32_t’s.
+    *)
+    let unsafe_get64 =
+      (* If we couldn't find the node don't do a read update - usually the case when the
+         shared object wasn't generated with the correct annotations. *)
+      if Ctypes.is_null addr_ptr
+      then (
+        if verbose
+        then
+          print_s
+            [%message "Can't find node in verilator, it won't be traced" (name : string)];
+        fun ~address:_ (_ : int) -> Int64.zero)
+      else (
+        let pointer = Ctypes.bigarray_of_ptr Ctypes.array1 size Bigarray.Char addr_ptr in
+        (* Need to case on signal width instead of just using [unsafe_get_int64_t_le] so
+           that we don't read off of the end of the bigstring. For example, if the signal
+           width is 8 and we try to read the last element of the memory,
+           [unsafe_get_int64_t_le] will read 7 bytes past the end of the bigstring. This
+           is mostly fine because we will truncate the returned int64 back to the width of
+           the signal in bits, but we could theoretically trigger a page fault (not sure
+           if this is actually possible in practice). *)
+        let signal_width = Signal.width signal in
+        if signal_width <= 8
+        then (fun ~address idx ->
+          assert (idx = 0);
+          let num_bytes_per_entry = 1 in
+          Bigstring.unsafe_get_uint8 pointer ~pos:(address * num_bytes_per_entry)
+          |> Int64.of_int)
+        else if signal_width <= 16
+        then (fun ~address idx ->
+          assert (idx = 0);
+          let num_bytes_per_entry = 2 in
+          Bigstring.unsafe_get_uint16_le pointer ~pos:(address * num_bytes_per_entry)
+          |> Int64.of_int)
+        else if signal_width <= 32
+        then (fun ~address idx ->
+          assert (idx = 0);
+          let num_bytes_per_entry = 4 in
+          Bigstring.unsafe_get_uint32_le pointer ~pos:(address * num_bytes_per_entry)
+          |> Int64.of_int)
+        else (
+          let num_bits_per_entry = Int.round_up signal_width ~to_multiple_of:32 in
+          let log_bits_per_byte = 3 in
+          let num_bytes_per_entry = num_bits_per_entry lsr log_bits_per_byte in
+          fun ~address word_idx ->
+            let byte_offset =
+              let log_bytes_per_word = 3 in
+              word_idx lsl log_bytes_per_word
+            in
+            Bigstring.unsafe_get_int64_t_le
+              pointer
+              ~pos:((address * num_bytes_per_entry) + byte_offset)))
+    in
+    port_name, { signal; getter = Memory { unsafe_get64 }; aliases }
   in
   let output_getters =
     List.map (Circuit.outputs circuit) ~f:(fun output ->
@@ -460,15 +536,10 @@ let create_foreign_bindings
     List.map signals_and_names ~f:(fun (signal, port_names) ->
       (* Only use the getter for the first alias *)
       let port_name = List.hd_exn port_names in
-      let bit_width =
-        match signal with
-        | Multiport_mem { size; _ } ->
-          (* Memories are exposed as 2d arrays so adjust the size to make sure we round
-             up and correctly read the entire contents. *)
-          size * round_up_size (Signal.width signal)
-        | _ -> Signal.width signal
-      in
-      bits_mutable_getters signal bit_width ~port_name ~aliases:port_names)
+      match signal with
+      | Multiport_mem { size; _ } ->
+        memory_mutable_getters signal ~size ~port_name ~aliases:port_names
+      | _ -> bits_mutable_getters signal ~port_name ~aliases:port_names)
   in
   let complete =
     let f =
@@ -485,7 +556,12 @@ let create_foreign_bindings
   { eval; input_setters; output_getters; internal_getters; complete }
 ;;
 
-let create_foreign_bindings_from_dllib circuit path_to_shared_lib internal_signals =
+let create_foreign_bindings_from_dllib
+  ~verbose
+  circuit
+  path_to_shared_lib
+  internal_signals
+  =
   let filename =
     (* dlopen requires an explicit path name to an existing file. *)
     match Filename_unix.realpath path_to_shared_lib with
@@ -495,7 +571,8 @@ let create_foreign_bindings_from_dllib circuit path_to_shared_lib internal_signa
         [%message "Could not find verilator shared library" (path_to_shared_lib : string)]
   in
   let dllib = Dl.dlopen ~filename ~flags:[ RTLD_NOW ] in
-  Staged.stage (fun () -> create_foreign_bindings ~from:dllib circuit internal_signals)
+  Staged.stage (fun () ->
+    create_foreign_bindings ~from:dllib ~verbose circuit internal_signals)
 ;;
 
 let compile_circuit
@@ -524,9 +601,7 @@ let compile_circuit
   in
   let path_to_verilog =
     let filename = build_dir ^/ Circuit.name circuit ^ ".v" in
-    let oc = Out_channel.create filename in
-    Out_channel.output_buffer oc verilog_contents;
-    Out_channel.close oc;
+    Out_channel.write_all filename ~data:(Rope.to_string verilog_contents);
     filename
   in
   let path_to_static_lib = obj_dir ^/ sprintf "V%s__ALL.a" (Circuit.name circuit) in
@@ -557,21 +632,20 @@ let compile_circuit
 let compile_circuit_with_cache
   ?(cache = Cache.No_cache)
   ?build_dir
-  ?(verilator_config = Config.from_env)
+  ~verilator_config
   ~config
   circuit
   =
   let shared_lib, verilog_name_by_id =
     let verilog_contents, verilog_name_by_id =
-      let buffer = Buffer.create 32 in
       (* annotate all the signals that need to be exposed *)
       internal_signals circuit config
       |> List.iter ~f:(fun (s, _) ->
         ignore (Signal.set_comment s "verilator public" : Signal.t));
-      let nm =
-        Rtl.Expert.output ~output_mode:(Rtl.Output_mode.To_buffer buffer) Verilog circuit
-      in
-      buffer, nm
+      match Rtl.create Verilog [ circuit ] with
+      | [ { top; subcircuits = _ } ] ->
+        Rtl.Circuit_instance.rtl top, Rtl.Circuit_instance.name_map top
+      | _ -> raise_s [%message "Circuit too complex - should be flattened"]
     in
     let compile_circuit () =
       compile_circuit
@@ -588,22 +662,28 @@ let compile_circuit_with_cache
       suffix ^ ".so"
     in
     let verbose = verilator_config.verbose in
-    let check_cached_and_compile fname =
+    let check_cached_and_compile ~raise_if_not_found fname =
       if Sys_unix.file_exists_exn fname
       then fname
       else (
+        if raise_if_not_found
+        then
+          raise_s
+            [%message
+              "Couldn't find file in cache when it was required!" (fname : string)];
         let compiled = compile_circuit () in
         run_command_exn ~verbose (sprintf "cp %s %s" compiled fname);
         fname)
     in
     ( (match cache with
        | No_cache -> compile_circuit ()
-       | Hashed { cache_dir } ->
-         let md5 = Md5.digest_bytes (Buffer.contents_bytes verilog_contents) in
+       | Hashed { cache_dir; raise_if_not_found } ->
+         let md5 = Md5.digest_string (Rope.to_string verilog_contents) in
          run_command_exn ~verbose (sprintf "mkdir -p %s" cache_dir);
          let fname = cache_dir ^/ Md5_lib.to_hex md5 ^ "-" ^ options in
-         check_cached_and_compile fname
-       | Explicit { file_name } -> check_cached_and_compile file_name)
+         check_cached_and_compile ~raise_if_not_found fname
+       | Explicit { file_name } ->
+         check_cached_and_compile ~raise_if_not_found:false file_name)
     , verilog_name_by_id )
   in
   shared_lib, internal_signals ~verilog_name_by_id circuit config
@@ -612,27 +692,35 @@ let compile_circuit_with_cache
 let compile_circuit_and_load_shared_object
   ?cache
   ?build_dir
-  ?verilator_config
+  ?(verilator_config = Config.from_env)
   ?(config = Cyclesim.Config.default)
   circuit
   =
   let shared_lib, internal_signals =
-    compile_circuit_with_cache ?cache ?build_dir ?verilator_config ~config circuit
+    compile_circuit_with_cache ?cache ?build_dir ~verilator_config ~config circuit
   in
   let create_bindings =
     Staged.unstage
-      (create_foreign_bindings_from_dllib circuit shared_lib internal_signals)
+      (create_foreign_bindings_from_dllib
+         ~verbose:verilator_config.verbose
+         circuit
+         shared_lib
+         internal_signals)
   in
   create_bindings ()
 ;;
+
+type internal_memory =
+  { name : string
+  ; signal : Signal.t
+  ; size : int
+  }
 
 let find_internal_memories (internal_signals : (Signal.t * string list) list) =
   List.filter_map internal_signals ~f:(fun (s, names) ->
     match s with
     | Multiport_mem { size; _ } ->
-      Some
-        (List.map names ~f:(fun n ->
-           n, s, Array.init size ~f:(fun _ -> Bits.of_int ~width:(Signal.width s) 0)))
+      Some (List.map names ~f:(fun n -> { name = n; signal = s; size }))
     | _ -> None)
   |> List.concat
 ;;
@@ -641,13 +729,13 @@ type ports_and_memories =
   { in_ports : (string * Bits.t ref) list
   ; out_ports_before_clock_edge : (string * Bits.t ref) list
   ; out_ports_after_clock_edge : (string * Bits.t ref) list
-  ; internal_memories : (string * Signal.t * Bits.t array) list
+  ; internal_memories : internal_memory list
   }
 
 let make_ports_and_memories circuit internal_signals =
   let make_port_list signals =
     List.map signals ~f:(fun s ->
-      List.hd_exn (Signal.names s), ref (Bits.of_int ~width:(Signal.width s) 0))
+      List.hd_exn (Signal.names s), ref (Signal.width s |> Bits.zero))
   in
   { in_ports = make_port_list (Circuit.inputs circuit)
   ; out_ports_before_clock_edge = make_port_list (Circuit.outputs circuit)
@@ -657,21 +745,15 @@ let make_ports_and_memories circuit internal_signals =
 ;;
 
 let make_read_memories (handle : t) ~ports_and_memories:{ internal_memories; _ } =
-  List.map internal_memories ~f:(fun (name, _, value_array) ->
-    let { signal = _; bits; update = fn; aliases = _ } =
+  List.map internal_memories ~f:(fun { name; signal = _; size = _ } ->
+    let { signal = _; getter; aliases = _ } =
       handle.internal_getters
       |> List.find_exn ~f:(fun a -> String.equal (fst a) name)
       |> snd
     in
-    fun () ->
-      fn ();
-      let value = Bits.Mutable.to_bits bits in
-      let actual_width = Bits.width value_array.(0) in
-      let rounded_width = round_up_size actual_width in
-      for i = 0 to Array.length value_array - 1 do
-        value_array.(i)
-        <- value.Bits.:[actual_width + (rounded_width * i) - 1, rounded_width * i]
-      done)
+    match getter with
+    | Memory { unsafe_get64 } -> unsafe_get64
+    | Signal _ -> raise_s [%message "BUG: expected memory"])
 ;;
 
 let make_cycle_functions
@@ -686,8 +768,10 @@ let make_cycle_functions
       fun () -> value_ref := fn ())
   in
   let make_read_internals getters =
-    List.filter_map getters ~f:(fun (_, { signal; bits = _; update; aliases = _ }) ->
-      if Signal.Type.is_mem signal then None else Some update)
+    List.filter_map getters ~f:(fun (_, { signal = _; getter; aliases = _ }) ->
+      match getter with
+      | Memory _ -> None
+      | Signal { bits = _; update } -> Some update)
   in
   let make_read_inputs in_ports =
     List.map in_ports ~f:(fun (name, value_ref) ->
@@ -755,45 +839,50 @@ let make_lookup_functions
   ~read_memories
   ~ports_and_memories:{ internal_memories; _ }
   =
-  let internal_memories_table_with_dynamic_lookup =
+  let internal_memories_table =
     Hashtbl.of_alist_exn
-      (module Signal.Uid)
-      (List.map2_exn read_memories internal_memories ~f:(fun f (_, s, bits) ->
-         Signal.uid s, (f, bits)))
+      (module Signal.Type.Uid)
+      (List.map2_exn
+         read_memories
+         internal_memories
+         ~f:(fun unsafe_get64 { signal; size; name = _ } ->
+           let width = Signal.width signal in
+           let memory =
+             Cyclesim.Memory.create_from_unsafe_lookup_function ~unsafe_get64 ~size ~width
+           in
+           Signal.uid signal, memory))
   in
-  let lookup predicate =
+  let lookup_non_mem predicate =
     let map =
       List.fold
         handle.internal_getters
-        ~init:(Map.empty (module Signal.Uid))
-        ~f:(fun map (_, { signal; bits; update = _; aliases = _ }) ->
+        ~init:(Map.empty (module Signal.Type.Uid))
+        ~f:(fun map (_, { signal; getter; aliases = _ }) ->
           if predicate signal
-          then
-            Map.add_exn
-              map
-              ~key:(Signal.uid signal)
-              ~data:(Cyclesim.Node.create_from_bits_mutable bits)
+          then (
+            match getter with
+            | Signal { bits; update = _ } ->
+              Map.add_exn
+                map
+                ~key:(Signal.uid signal)
+                ~data:(Cyclesim.Node.create_from_bits_mutable bits)
+            | Memory _ ->
+              raise_s [%message "BUG: only expected to lookup non-memory signals"])
           else map)
     in
     fun (traced : Cyclesim.Traced.internal_signal) ->
       Map.find map (Signal.uid traced.signal)
   in
   let lookup_node =
-    lookup (fun s -> not (Signal.Type.is_mem s || Signal.Type.is_reg s))
+    lookup_non_mem (fun s -> not (Signal.Type.is_mem s || Signal.Type.is_reg s))
   in
   let lookup_reg traced =
     (* Register in verilator are read-only. *)
-    lookup Signal.Type.is_reg traced |> Option.map ~f:Cyclesim.Reg.read_only_of_node
+    lookup_non_mem Signal.Type.is_reg traced
+    |> Option.map ~f:Cyclesim.Reg.read_only_of_node
   in
   let lookup_mem (traced : Cyclesim.Traced.internal_signal) =
-    Hashtbl.find_and_call
-      internal_memories_table_with_dynamic_lookup
-      (Signal.uid traced.signal)
-      ~if_found:(fun (f, bits_array) ->
-        (* Only load the values if needed. *)
-        f ();
-        Some (Cyclesim.Memory.create_from_read_only_bits_array bits_array))
-      ~if_not_found:(Fn.const None)
+    Hashtbl.find internal_memories_table (Signal.uid traced.signal)
   in
   lookup_node, lookup_reg, lookup_mem
 ;;
@@ -829,18 +918,22 @@ let make_simulator_state_functions handle ~clock_names ~ports_and_memories =
 let create
   ?cache
   ?build_dir
-  ?verilator_config
+  ?(verilator_config = Config.from_env)
   ?(config = Cyclesim.Config.default)
   ~clock_names
   circuit
   =
   let shared_object, (internal_signals : (Signal.t * string list) List.t) =
-    compile_circuit_with_cache ?cache ?build_dir ?verilator_config ~config circuit
+    compile_circuit_with_cache ?cache ?build_dir ~verilator_config ~config circuit
   in
   let ports_and_memories = make_ports_and_memories circuit internal_signals in
   let create_handle =
     Staged.unstage
-      (create_foreign_bindings_from_dllib circuit shared_object internal_signals)
+      (create_foreign_bindings_from_dllib
+         ~verbose:verilator_config.verbose
+         circuit
+         shared_object
+         internal_signals)
   in
   let create_fresh_state () =
     make_simulator_state_functions (create_handle ()) ~clock_names ~ports_and_memories
@@ -873,7 +966,7 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
   let create_shared_object
     ?cache:_
     ?build_dir
-    ?verilator_config
+    ?(verilator_config = Config.from_env)
     ?(config = Cyclesim.Config.default)
     create_fn
     =
@@ -882,7 +975,7 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
       compile_circuit_with_cache
         ~cache:No_cache
         ?build_dir
-        ?verilator_config
+        ~verilator_config
         ~config
         circuit
     in
@@ -894,7 +987,7 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
     let ignore_missing_fields t_list ~of_alist list =
       List.map t_list ~f:(fun (n, w) ->
         match List.find list ~f:(fun a -> String.equal n (fst a)) with
-        | None -> n, ref (Bits.of_int ~width:w 0)
+        | None -> n, ref (Bits.zero w)
         | Some x -> x)
       |> of_alist
     in
