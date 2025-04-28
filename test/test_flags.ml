@@ -48,7 +48,7 @@ let%expect_test "default - v5" =
   print Config.default;
   [%expect
     {|
-    CXXFLAGS="-fPIC" verilator5 -O3 --threads 1 --top-module circuit  -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED -Wno-INITIALDLY --cc verilog  --Mdir obj_dir wrapper
+    CXXFLAGS="-fPIC" verilator5 -O3 --threads 1 --top-module circuit  -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED -Wno-INITIALDLY -Wno-MULTIDRIVEN --cc verilog  --Mdir obj_dir wrapper
     CXXFLAGS="-fPIC -g -O3" OBJCACHE=""  make  -C obj_dir -f Vcircuit.mk Vcircuit__ALL.a wrapper.o verilated.o verilated_threads.o
     g++ -latomic -lpthread -fPIC -O3 -g -shared -o shared obj_dir/wrapper.o obj_dir/verilated.o obj_dir/verilated_threads.o static
     |}]
@@ -58,7 +58,7 @@ let%expect_test "small_cfiles - v5" =
   print Config.small_cfiles;
   [%expect
     {|
-    CXXFLAGS="-fPIC" verilator5 -O3 --threads 1 --top-module circuit --output-split  5000 --output-split-cfuncs  500 --output-split-ctrace 500 -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED -Wno-INITIALDLY --cc verilog  --Mdir obj_dir wrapper
+    CXXFLAGS="-fPIC" verilator5 -O3 --threads 1 --top-module circuit --output-split  5000 --output-split-cfuncs  500 --output-split-ctrace 500 -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED -Wno-INITIALDLY -Wno-MULTIDRIVEN --cc verilog  --Mdir obj_dir wrapper
     CXXFLAGS="-fPIC -g -O3" OBJCACHE=""  make  -C obj_dir -f Vcircuit.mk Vcircuit__ALL.a wrapper.o verilated.o verilated_threads.o
     g++ -latomic -lpthread -fPIC -O3 -g -shared -o shared obj_dir/wrapper.o obj_dir/verilated.o obj_dir/verilated_threads.o static
     |}]
@@ -68,7 +68,7 @@ let%expect_test "small_cfiles parallel - v5" =
   print { Config.small_cfiles with compilation_processes = Threads.create 27 };
   [%expect
     {|
-    CXXFLAGS="-fPIC" verilator5 -O3 --threads 1 --top-module circuit --output-split  5000 --output-split-cfuncs  500 --output-split-ctrace 500 -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED -Wno-INITIALDLY --cc verilog  --Mdir obj_dir wrapper
+    CXXFLAGS="-fPIC" verilator5 -O3 --threads 1 --top-module circuit --output-split  5000 --output-split-cfuncs  500 --output-split-ctrace 500 -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED -Wno-INITIALDLY -Wno-MULTIDRIVEN --cc verilog  --Mdir obj_dir wrapper
     CXXFLAGS="-fPIC -g -O3" OBJCACHE="" VM_PARALLEL_BUILDS=1 make -j27 -C obj_dir -f Vcircuit.mk Vcircuit__ALL.a wrapper.o verilated.o verilated_threads.o
     g++ -latomic -lpthread -fPIC -O3 -g -shared -o shared obj_dir/wrapper.o obj_dir/verilated.o obj_dir/verilated_threads.o static
     |}]
@@ -80,7 +80,7 @@ let%expect_test "default - v4" =
   print Config.default;
   [%expect
     {|
-    CXXFLAGS="-fPIC" verilator4 -O3 --no-threads --top-module circuit  -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED -Wno-INITIALDLY --cc verilog  --Mdir obj_dir wrapper
+    CXXFLAGS="-fPIC" verilator4 -O3 --no-threads --top-module circuit  -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED -Wno-INITIALDLY -Wno-MULTIDRIVEN --cc verilog  --Mdir obj_dir wrapper
     CXXFLAGS="-fPIC -g -O3" OBJCACHE=""  make  -C obj_dir -f Vcircuit.mk Vcircuit__ALL.a wrapper.o verilated.o
     g++ -latomic -lpthread -fPIC -O3 -g -shared -o shared obj_dir/wrapper.o obj_dir/verilated.o static
     |}]
@@ -90,7 +90,7 @@ let%expect_test "small_cfiles - v4" =
   print Config.small_cfiles;
   [%expect
     {|
-    CXXFLAGS="-fPIC" verilator4 -O3 --no-threads --top-module circuit --output-split  5000 -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED -Wno-INITIALDLY --cc verilog  --Mdir obj_dir wrapper
+    CXXFLAGS="-fPIC" verilator4 -O3 --no-threads --top-module circuit --output-split  5000 -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED -Wno-INITIALDLY -Wno-MULTIDRIVEN --cc verilog  --Mdir obj_dir wrapper
     CXXFLAGS="-fPIC -g -O3" OBJCACHE=""  make  -C obj_dir -f Vcircuit.mk Vcircuit__ALL.a wrapper.o verilated.o
     g++ -latomic -lpthread -fPIC -O3 -g -shared -o shared obj_dir/wrapper.o obj_dir/verilated.o static
     |}]
@@ -100,7 +100,7 @@ let%expect_test "parallel - v4" =
   print { Config.default with compilation_processes = Threads.create 33 };
   [%expect
     {|
-    CXXFLAGS="-fPIC" verilator4 -O3 --no-threads --top-module circuit  -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED -Wno-INITIALDLY --cc verilog  --Mdir obj_dir wrapper
+    CXXFLAGS="-fPIC" verilator4 -O3 --no-threads --top-module circuit  -Wno-COMBDLY -Wno-CMPCONST -Wno-UNSIGNED -Wno-INITIALDLY -Wno-MULTIDRIVEN --cc verilog  --Mdir obj_dir wrapper
     CXXFLAGS="-fPIC -g -O3" OBJCACHE="" VM_PARALLEL_BUILDS=1 make -j33 -C obj_dir -f Vcircuit.mk Vcircuit__ALL.a wrapper.o verilated.o
     g++ -latomic -lpthread -fPIC -O3 -g -shared -o shared obj_dir/wrapper.o obj_dir/verilated.o static
     |}]

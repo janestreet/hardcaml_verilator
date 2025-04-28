@@ -28,7 +28,7 @@ let test width =
     let wa =
       let w = wire 2 in
       let r = reg spec ~enable:we w in
-      w <== r +:. 1;
+      w <-- r +:. 1;
       r
     in
     let q =
@@ -64,7 +64,7 @@ let test width =
   (* cannot write internal regs *)
   require_does_raise (fun () ->
     let q_reg = Cyclesim.lookup_reg_by_name sim "q_reg" |> Option.value_exn in
-    Cyclesim.Reg.of_bits q_reg (Bits.of_int ~width 10));
+    Cyclesim.Reg.of_bits q_reg (Bits.of_unsigned_int ~width 1));
   (* read internal memories *)
   require_does_not_raise (fun () ->
     let q_mem = Cyclesim.lookup_mem_by_name sim "q_mem" |> Option.value_exn in
@@ -72,7 +72,7 @@ let test width =
   (* cannot write internal memories *)
   require_does_raise (fun () ->
     let q_mem = Cyclesim.lookup_mem_by_name sim "q_mem" |> Option.value_exn in
-    Cyclesim.Memory.of_bits q_mem ~address:1 (Bits.of_int ~width 10))
+    Cyclesim.Memory.of_bits q_mem ~address:1 (Bits.of_unsigned_int ~width 1))
 ;;
 
 let%expect_test "lookup simulator - 1 bit" =

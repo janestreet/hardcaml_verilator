@@ -1,4 +1,5 @@
-(** Verilator backend for Hardcaml cycle simulations.
+(** {v
+ Verilator backend for Hardcaml cycle simulations.
 
     While this performs faster than Hardcaml's Cyclesim, it takes a longer time to
     elaborate the design (a ~3_000 LoC verilog file takes around 2 seconds, whilist
@@ -15,7 +16,7 @@
     >    functions using C-types
     6. Create a [Cyclesim.t] instance by supplying the relevant functions with bindings to
     >    verilator
-*)
+    v} *)
 
 open Core
 open Hardcaml
@@ -28,7 +29,12 @@ module Config = Config
 module Cache : sig
   type t =
     | No_cache
-    | Hashed of { cache_dir : string }
+    | Hashed of
+        { cache_dir : string
+        ; raise_if_not_found : bool
+        (** Raises if the shared object cannot be found in the [cache_dir] provided,
+            otherwise a new one will be compiled. *)
+        }
     | Explicit of { file_name : string }
   [@@deriving sexp, bin_io]
 end
@@ -44,11 +50,11 @@ end
 
 type input_port = Bits.t -> unit
 type output_port = unit -> Bits.t
+type internal_getter
 
 type internal_port =
   { signal : Signal.t
-  ; bits : Bits.Mutable.t
-  ; update : unit -> unit
+  ; getter : internal_getter
   ; aliases : string list
   }
 
@@ -73,8 +79,7 @@ type t =
       compiled in parallel, and if so with how many parallel jobs.
     - [threads] speficies whether the verilator simulation object should be generated to
       be run in parallel, and if so with how many parallel threads.
-    - [version] specifies which major version of verilator we want to use.
-*)
+    - [version] specifies which major version of verilator we want to use. *)
 type 'a with_options =
   ?cache:Cache.t
   -> ?build_dir:string
