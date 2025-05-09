@@ -1,1 +1,1 @@
-module Test_lookup = Test_lookup
+(*_ Nothing to export. *)
