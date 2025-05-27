@@ -1,5 +1,5 @@
-"Hardcaml Verilator"
-====================
+Verilator Based Simulations
+===========================
 
 Hardcaml_verilator converts Hardcaml designs to verilog and compiles
 them with [verilator](https://www.veripool.org/wiki/verilator). This

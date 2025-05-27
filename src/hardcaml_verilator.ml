@@ -870,28 +870,35 @@ let make_lookup_functions
               raise_s [%message "BUG: only expected to lookup non-memory signals"])
           else map)
     in
-    fun (traced : Cyclesim.Traced.internal_signal) ->
-      Map.find map (Signal.uid traced.signal)
+    fun signal_id -> Map.find map signal_id
   in
-  let lookup_node =
+  let lookup_node_by_id =
     lookup_non_mem (fun s -> not (Signal.Type.is_mem s || Signal.Type.is_reg s))
   in
-  let lookup_reg traced =
+  let lookup_node (traced : Cyclesim.Traced.internal_signal) =
+    lookup_node_by_id (Signal.uid traced.signal)
+  in
+  let lookup_reg_by_id signal_id =
     (* Register in verilator are read-only. *)
-    lookup_non_mem Signal.Type.is_reg traced
+    lookup_non_mem Signal.Type.is_reg signal_id
     |> Option.map ~f:Cyclesim.Reg.read_only_of_node
+  in
+  let lookup_reg (traced : Cyclesim.Traced.internal_signal) =
+    lookup_reg_by_id (Signal.uid traced.signal)
   in
   let lookup_mem (traced : Cyclesim.Traced.internal_signal) =
     Hashtbl.find internal_memories_table (Signal.uid traced.signal)
   in
-  lookup_node, lookup_reg, lookup_mem
+  lookup_node_by_id, lookup_node, lookup_reg_by_id, lookup_reg, lookup_mem
 ;;
 
 type simulator_state_functions =
   { cycle_before_clock_edge : unit -> unit
   ; cycle_at_clock_edge : unit -> unit
   ; cycle_after_clock_edge : unit -> unit
+  ; lookup_node_by_id : Signal.Type.Uid.t -> Cyclesim.Node.t option
   ; lookup_node : Cyclesim.Traced.internal_signal -> Cyclesim.Node.t option
+  ; lookup_reg_by_id : Signal.Type.Uid.t -> Cyclesim.Reg.t option
   ; lookup_reg : Cyclesim.Traced.internal_signal -> Cyclesim.Reg.t option
   ; lookup_mem : Cyclesim.Traced.internal_signal -> Cyclesim.Memory.t option
   ; complete : unit -> unit
@@ -902,13 +909,15 @@ let make_simulator_state_functions handle ~clock_names ~ports_and_memories =
   let cycle_before_clock_edge, cycle_at_clock_edge, cycle_after_clock_edge, complete =
     make_cycle_functions handle ~clock_names ~ports_and_memories
   in
-  let lookup_node, lookup_reg, lookup_mem =
+  let lookup_node_by_id, lookup_node, lookup_reg_by_id, lookup_reg, lookup_mem =
     make_lookup_functions handle ~read_memories ~ports_and_memories
   in
   { cycle_before_clock_edge
   ; cycle_at_clock_edge
   ; cycle_after_clock_edge
+  ; lookup_node_by_id
   ; lookup_node
+  ; lookup_reg_by_id
   ; lookup_reg
   ; lookup_mem
   ; complete
@@ -954,7 +963,9 @@ let create
     ~cycle_at_clock_edge:(fun () -> !state.cycle_at_clock_edge ())
     ~cycle_after_clock_edge:(fun () -> !state.cycle_after_clock_edge ())
     ~traced:(make_traced circuit internal_signals)
+    ~lookup_node_by_id:(fun s -> !state.lookup_node_by_id s)
     ~lookup_node:(fun s -> !state.lookup_node s)
+    ~lookup_reg_by_id:(fun s -> !state.lookup_reg_by_id s)
     ~lookup_reg:(fun s -> !state.lookup_reg s)
     ~lookup_mem:(fun s -> !state.lookup_mem s)
     ()
