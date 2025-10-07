@@ -170,6 +170,16 @@ let with_tmp_stdout ~verbose ~f =
   Option.iter tmp_stdout ~f:Unix.unlink
 ;;
 
+let path_with_required_system_tools () =
+  let path = Sys.getenv "PATH" |> Option.value ~default:"" in
+  let tools =
+    [ "python3"; "ccache" ]
+    |> List.map ~f:(fun tool -> Filename.dirname tool)
+    |> String.concat ~sep:":"
+  in
+  [%string "%{path}:%{tools}"]
+;;
+
 let run_command_exn ?(verbose = false) command =
   with_tmp_stdout ~verbose ~f:(fun tmp_stdout ->
     if verbose then print_endline command;
@@ -178,6 +188,8 @@ let run_command_exn ?(verbose = false) command =
       | Some tmp_stdout -> [%string "%{command} &>%{tmp_stdout}"]
       | None -> command
     in
+    let path = path_with_required_system_tools () in
+    let command = [%string "PATH=\"%{path}\" %{command}"] in
     match Unix.system command with
     | Ok () -> ()
     | Error e ->

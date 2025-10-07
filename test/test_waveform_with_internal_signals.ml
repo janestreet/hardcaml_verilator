@@ -24,7 +24,7 @@ module Alternating = struct
     type t =
       | First
       | Second
-    [@@deriving compare, enumerate, sexp_of]
+    [@@deriving compare ~localize, enumerate, sexp_of]
   end
 
   let create (i : Signal.t I.t) =
@@ -34,7 +34,7 @@ module Alternating = struct
     let c1_next = c1.value +:. 1 in
     let c2 = Always.Variable.reg spec ~enable:vdd ~width:3 in
     let c2_next = c2.value +:. 1 in
-    let w1 = Always.Variable.wire ~default:gnd in
+    let w1 = Always.Variable.wire ~default:gnd () in
     ignore (sm.current -- "STATE" : Signal.t);
     ignore (w1.value -- "W1" : Signal.t);
     ignore (c1.value -- "C1" : Signal.t);
