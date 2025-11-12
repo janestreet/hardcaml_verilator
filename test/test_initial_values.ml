@@ -11,7 +11,7 @@ let%expect_test "initial values" =
     (* Start a counter at 2 *)
     reg_fb
       (Reg_spec.create ~clock ())
-      ~initialize_to:(Signal.of_int_trunc ~width:address_width 2)
+      ~initialize_to:(Bits.of_int_trunc ~width:address_width 2)
       ~width:address_width
       ~f:(fun d -> d +:. 1)
   in

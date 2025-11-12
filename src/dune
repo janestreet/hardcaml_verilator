@@ -1,7 +1,7 @@
 (library
  (name hardcaml_verilator)
  (public_name hardcaml_verilator)
- (libraries core hardcaml core_unix ctypes ctypes.foreign
-   core_unix.filename_unix base.md5 jane_rope stdio core_unix.sys_unix)
+ (libraries core core_unix ctypes ctypes.foreign core_unix.filename_unix
+   hardcaml base.md5 jane_rope stdio core_unix.sys_unix)
  (preprocess
   (pps ppx_hardcaml ppx_jane)))
