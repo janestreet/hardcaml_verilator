@@ -476,13 +476,13 @@ let create_foreign_bindings
   let memory_mutable_getters signal ~size ~port_name ~aliases =
     let name = to_verilator_vpi_name port_name in
     let addr_ptr = (Lazy.force internal_getter_lookup) name in
-    (* When converting bit widths from memory we need to round up each memory slot's bit_width
-       to read correctly.
+    (* When converting bit widths from memory we need to round up each memory slot's
+       bit_width to read correctly.
 
        Signals are the smallest of 8-bit unsigned chars (equivalent to uint8_t), 16-bit
-       unsigned shorts (uint16_t), 32-bit unsigned longs (uint32_t), or 64-bit unsigned long
-       longs (uint64_t) that fits the width of the signal. Signals wider than 64 bits are
-       stored as an array of 32-bit uint32_t’s.
+       unsigned shorts (uint16_t), 32-bit unsigned longs (uint32_t), or 64-bit unsigned
+       long longs (uint64_t) that fits the width of the signal. Signals wider than 64 bits
+       are stored as an array of 32-bit uint32_t’s.
     *)
     let unsafe_get64 =
       (* If we couldn't find the node don't do a read update - usually the case when the
@@ -970,6 +970,8 @@ let create
     ~out_ports_before_clock_edge:ports_and_memories.out_ports_before_clock_edge
     ~out_ports_after_clock_edge:ports_and_memories.out_ports_after_clock_edge
     ~reset
+    ~clock_mode:`All_one_domain
+    ~clocks_aligned:(Fn.const true)
     ~cycle_check:Fn.id
     ~cycle_before_clock_edge:(fun () -> !state.cycle_before_clock_edge ())
     ~cycle_at_clock_edge:(fun () -> !state.cycle_at_clock_edge ())

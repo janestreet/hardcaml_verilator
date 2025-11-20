@@ -143,9 +143,8 @@ let verilator_compilation_command
 let make_compilation_command ~circuit_name ~obj_dir t =
   let { make_envvars; make_jobs } = make_flags t in
   (* OBJCACHE controls the use of ccache. If it is not present, then by default ccache
-     gets used, which we dont want.
-     The semantics here are to use OBJCACHE if set, otherwise set it to nothing (but
-     actually set it) so no caching is performed. *)
+     gets used, which we dont want. The semantics here are to use OBJCACHE if set,
+     otherwise set it to nothing (but actually set it) so no caching is performed. *)
   let objcache = Option.value ~default:"" (Sys.getenv "OBJCACHE") in
   sprintf
     "CXXFLAGS=\"-fPIC -g %s\" OBJCACHE=\"%s\" %s make %s -C %s -f V%s.mk V%s__ALL.a %s"
