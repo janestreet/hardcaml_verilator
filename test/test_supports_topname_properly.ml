@@ -3,8 +3,8 @@ open Hardcaml
 open Signal
 
 (* When internal signals are enabled we look up some internal data structures of the
-   simulation object. They are named according to the [circuit_name]. Make sure that
-   it still works. *)
+   simulation object. They are named according to the [circuit_name]. Make sure that it
+   still works. *)
 let%expect_test ("Supports topname properly" [@tags "disabled"]) =
   let module Sim = Hardcaml_verilator in
   let i = input "i" 1 in

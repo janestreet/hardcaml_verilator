@@ -45,7 +45,7 @@ let%expect_test "initial values" =
   Hardcaml_waveterm.Waveform.print
     ~display_rules:
       [ Hardcaml_waveterm.Display_rule.port_name_matches
-          Re.Posix.(compile (re ".*"))
+          (Posix ".*")
           ~wave_format:(Bit_or Unsigned_int)
           ~alignment:Right
       ]

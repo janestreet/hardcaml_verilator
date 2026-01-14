@@ -103,7 +103,6 @@ type 'a with_options =
   -> 'a
 
 let sprintf = Printf.sprintf
-let bprintf = Printf.bprintf
 let init_name ~circuit_name = sprintf "hardcaml_verilator_%s_init" circuit_name
 let complete_name ~circuit_name = sprintf "hardcaml_verilator_%s_final" circuit_name
 let eval_name ~circuit_name = sprintf "hardcaml_verilator_%s_eval" circuit_name
@@ -203,83 +202,102 @@ let generate_cpp_wrapper
   buffer
   (circuit : Circuit.t)
   (config : Cyclesim.Config.t)
+  (verilator_config : Config.t)
   (verilog_name_by_id : Rtl.Ast.Signals_name_map.t)
   =
   let circuit_name = Circuit.name circuit in
+  let verilator_threads_name = String.prefix ("vrlt_" ^ circuit_name) 15 in
+  let verilator_threadpool_size = Threads.to_string verilator_config.runtime_threads in
   let typ = "V" ^ circuit_name in
-  bprintf buffer "#include <stdint.h>\n";
-  bprintf buffer "#include \"verilated.h\"\n";
-  bprintf buffer "#include \"verilated_sym_props.h\"\n";
-  bprintf buffer "#include \"V%s.h\"\n" circuit_name;
+  let add_string s = Buffer.add_string buffer (Dedent.string s) in
+  add_string
+    [%string
+      {|
+      #include <stdint.h>
+      #include "verilated.h"
+      #include "verilated_sym_props.h"
+      #include "V%{circuit_name}.h"
+
+    |}];
   let internal_signals = internal_signals circuit config ~verilog_name_by_id in
   if List.length internal_signals > 0
-  then (
-    bprintf buffer "#include \"V%s_%s.h\"\n" circuit_name circuit_name;
-    bprintf buffer "#include \"V%s__Syms.h\"\n" circuit_name);
-  bprintf buffer "extern \"C\"{\n\n";
-  let () =
-    bprintf buffer "%s* %s(){\n" typ (init_name ~circuit_name);
-    bprintf buffer "  return new %s;\n" typ;
-    bprintf buffer "};\n"
-  in
-  let () =
-    bprintf buffer "void %s(%s * p){\n" (eval_name ~circuit_name) typ;
-    bprintf buffer "  p->eval();\n";
-    bprintf buffer "};\n"
-  in
-  let () =
-    bprintf buffer "void %s(%s * p){\n" (complete_name ~circuit_name) typ;
-    bprintf buffer "  p->final();\n";
-    bprintf buffer "  delete p;\n";
-    bprintf buffer "};\n"
-  in
+  then
+    add_string
+      [%string
+        {|
+        #include "V%{circuit_name}_%{circuit_name}.h"
+        #include "V%{circuit_name}__Syms.h"
+
+      |}];
+  add_string
+    [%string
+      {|
+      extern "C" {
+
+      %{typ} *%{init_name ~circuit_name}() {
+          char original_thread_name[16];
+          pthread_getname_np(pthread_self(), original_thread_name, sizeof original_thread_name);
+          pthread_setname_np(pthread_self(), "%{verilator_threads_name}");
+
+          VerilatedContext *ctx = new VerilatedContext;
+          ctx->threads(%{verilator_threadpool_size});
+
+          %{typ} *model = new %{typ}(ctx); // Implicitly initializes ctx threadpool
+
+          pthread_setname_np(pthread_self(), original_thread_name);
+          return model;
+      }
+
+      void %{eval_name ~circuit_name}(%{typ} *p) {
+        p->eval();
+      }
+
+      void %{complete_name ~circuit_name}(%{typ} *p){
+        p->final();
+        auto ctx = p->contextp();
+        delete p;
+        delete ctx; // we never share contexts
+      }
+    |}];
   List.iter (Circuit.inputs circuit) ~f:(fun input ->
     let port_name = List.hd_exn (Signal.names input) in
-    bprintf
+    Buffer.add_string
       buffer
-      "char* %s(%s * ptr) {\n"
-      (input_addr_fn_name ~circuit_name ~port_name)
-      typ;
-    bprintf buffer "  return (char*) &(ptr->%s);\n" (sanitize_port_name port_name);
-    bprintf buffer "}\n");
+      [%string
+        {|
+        char* %{input_addr_fn_name ~circuit_name ~port_name}(%{typ} *ptr) {
+          return (char*) &(ptr->%{sanitize_port_name port_name});
+        }
+        |}]);
   List.iter (Circuit.outputs circuit) ~f:(fun output ->
     let port_name = List.hd_exn (Signal.names output) in
-    bprintf
-      buffer
-      "const char* %s(%s * ptr) {\n"
-      (output_addr_fn_name ~circuit_name ~port_name)
-      typ;
-    bprintf buffer "  return (char*) &(ptr->%s);\n" (sanitize_port_name port_name);
-    bprintf buffer "}\n");
+    add_string
+      [%string
+        {|
+        const char* %{output_addr_fn_name ~circuit_name ~port_name}(%{typ} *ptr) {
+          return (char*) &(ptr->%{sanitize_port_name port_name});
+        }
+      |}]);
   let () =
     match internal_signals with
     | [] -> ()
     | _ ->
-      bprintf
-        buffer
-        "char *%s(%s *ptr, char *p){\n"
-        (internal_addr_fn_name ~circuit_name)
-        typ;
-      bprintf
-        buffer
-        "  V%s_%s *%s = ptr->%s;\n"
-        circuit_name
-        circuit_name
-        circuit_name
-        circuit_name;
-      bprintf buffer "  V%s__Syms* vlSymsp = %s->vlSymsp;\n" circuit_name circuit_name;
-      bprintf
-        buffer
-        "  VerilatedVar *var = vlSymsp->__Vscope_%s.varFind(p);\n"
-        circuit_name;
-      bprintf buffer " if (var != NULL) {\n";
-      bprintf buffer "  return (char *) var->datap();\n";
-      bprintf buffer " } else {\n";
-      bprintf buffer "  return NULL;\n";
-      bprintf buffer "};\n";
-      bprintf buffer "}\n"
+      add_string
+        [%string
+          {|
+          char *%{internal_addr_fn_name ~circuit_name}(%{typ} *ptr, char *p) {
+            V%{circuit_name}_%{circuit_name} *%{circuit_name} = ptr->%{circuit_name};
+            V%{circuit_name}__Syms* vlSymsp = %{circuit_name}->vlSymsp;
+            VerilatedVar *var = vlSymsp->__Vscope_%{circuit_name}.varFind(p);
+
+            if (var != NULL) {
+              return (char *)var->datap();
+            }
+            return NULL;
+          }
+        |}]
   in
-  bprintf buffer "\n}\n"
+  add_string "\n}\n"
 ;;
 
 external caml_bytes_set16 : Bytes.t -> int -> int -> unit = "%caml_bytes_set16u"
@@ -607,7 +625,7 @@ let compile_circuit
   let path_to_cpp_wrapper =
     let filename = build_dir ^/ "wrapper.cpp" in
     let buffer = Buffer.create 1048 in
-    generate_cpp_wrapper buffer circuit config verilog_name_by_id;
+    generate_cpp_wrapper buffer circuit config verilator_config verilog_name_by_id;
     Stdio.Out_channel.write_all filename ~data:(Buffer.contents buffer);
     filename
   in
@@ -972,6 +990,7 @@ let create
     ~reset
     ~clock_mode:`All_one_domain
     ~clocks_aligned:(Fn.const true)
+    ~cycle_multiple:1
     ~cycle_check:Fn.id
     ~cycle_before_clock_edge:(fun () -> !state.cycle_before_clock_edge ())
     ~cycle_at_clock_edge:(fun () -> !state.cycle_at_clock_edge ())
