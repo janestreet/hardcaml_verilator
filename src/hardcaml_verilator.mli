@@ -23,7 +23,6 @@ open Hardcaml
 module Optimization_level = Optimization_level
 module Threads = Threads
 module Output_split = Output_split
-module Verilator_version = Verilator_version
 module Config = Config
 
 module Cache : sig
@@ -88,11 +87,11 @@ type 'a with_options =
   -> 'a
 
 val compile_circuit_and_load_shared_object : (Circuit.t -> t) with_options
-val create : (clock_names:string list -> Circuit.t -> Cyclesim.t_port_list) with_options
+val create : (?clock_names:string list -> Circuit.t -> Cyclesim.t_port_list) with_options
 
 module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) : sig
   val create
-    : (clock_names:string list
+    : (?clock_names:string list
        -> (Signal.t I.t -> Signal.t O.t)
        -> (Bits.t ref I.t, Bits.t ref O.t) Cyclesim.t)
         with_options
