@@ -9,4 +9,3 @@ val flag : t Command.Param.t
 (* / *)
 
 val split_options : t -> string
-val v4_compat : t -> t

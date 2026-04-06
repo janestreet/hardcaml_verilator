@@ -60,5 +60,3 @@ let split_options t =
   in
   String.concat ~sep:" " (List.concat [ lines_per_file; lines_per_function ])
 ;;
-
-let v4_compat t = { t with lines_per_function = None }

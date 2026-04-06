@@ -8,7 +8,6 @@ module Unix = Core_unix
 module Optimization_level = Optimization_level
 module Threads = Threads
 module Output_split = Output_split
-module Verilator_version = Verilator_version
 module Config = Config
 
 module Cache = struct
@@ -786,6 +785,13 @@ let make_read_memories (handle : t) ~ports_and_memories:{ internal_memories; _ }
     | Signal _ -> raise_s [%message "BUG: expected memory"])
 ;;
 
+let infer_clock_names circuit =
+  Signal_graph.resolve_clock_domains (Circuit.signal_graph circuit)
+  |> Map.data
+  |> List.concat_map ~f:Signal.names
+  |> List.dedup_and_sort ~compare:String.compare
+;;
+
 let make_cycle_functions
   (handle : t)
   ~clock_names
@@ -959,9 +965,14 @@ let create
   ?build_dir
   ?(verilator_config = Config.from_env)
   ?(config = Cyclesim.Config.default)
-  ~clock_names
+  ?clock_names
   circuit
   =
+  let clock_names =
+    match clock_names with
+    | Some clock_names -> clock_names
+    | None -> infer_clock_names circuit
+  in
   let shared_object, (internal_signals : (Signal.t * string list) List.t) =
     compile_circuit_with_cache ?cache ?build_dir ~verilator_config ~config circuit
   in
@@ -1026,7 +1037,7 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
     shared_lib
   ;;
 
-  let create ?cache ?build_dir ?verilator_config ?config ~clock_names create_fn =
+  let create ?cache ?build_dir ?verilator_config ?config ?clock_names create_fn =
     let circuit = Circuit.create_exn ~name:"simulation" create_fn in
     let ignore_missing_fields t_list ~of_alist list =
       List.map t_list ~f:(fun (n, w) ->
@@ -1036,7 +1047,7 @@ module With_interface (I : Hardcaml.Interface.S) (O : Hardcaml.Interface.S) = st
       |> of_alist
     in
     Cyclesim.Private.coerce
-      (create ?cache ?build_dir ?verilator_config ?config ~clock_names circuit)
+      (create ?cache ?build_dir ?verilator_config ?config ?clock_names circuit)
       ~to_input:
         (ignore_missing_fields
            (I.to_list I.port_names_and_widths)

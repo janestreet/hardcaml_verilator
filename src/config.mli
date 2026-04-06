@@ -1,23 +1,23 @@
 open! Core
 
 type t =
-  { verilator_version : Verilator_version.t
-  ; optimization_level : Optimization_level.t
+  { optimization_level : Optimization_level.t
   ; compilation_processes : Threads.t
   ; runtime_threads : Threads.t
   ; output_split : Output_split.t
   ; verbose : bool
+  ; compilation_stats : bool
   }
 [@@deriving sexp_of]
 
-(** Default verilator compilation settings with no parallelism *)
+(** Default verilator compilation settings with no parallelism. *)
 val default : t
 
 (** Split C-files and functions into much smaller chunks. *)
 val small_cfiles : t
 
 (** Small C-files with compilation parallelism specified with
-    [VERILATOR_PARALLEL_COMPILE=n] *)
+    [VERILATOR_PARALLEL_COMPILE=n]. *)
 val from_env : t
 
 val flag : t Command.Param.t
