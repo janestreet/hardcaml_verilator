@@ -52,5 +52,5 @@ let%expect_test "cyclesim with interface" =
   (match Unix.system (sprintf "ls %s" cache_dir) with
    | Ok () -> ()
    | Error e -> raise_s [%message (e : Core_unix.Exit_or_signal.error)]);
-  [%expect {| c8e5601e4aa8d48e281cbc1dd3e2e441-O3-procs1-threads1-perfile0-perfunc0.so |}]
+  [%expect {| 88c744d46042c9221ca0ea5918380c06-O3-procs1-threads1-perfile0-perfunc0.so |}]
 ;;
