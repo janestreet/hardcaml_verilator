@@ -17,15 +17,16 @@ depends: [
   "core_unix"
   "dedent"
   "hardcaml"
+  "hardcaml_tools_config"
   "jane_rope"
   "ppx_hardcaml"
   "ppx_jane"
   "stdio"
-  "ctypes"         {= "0.23.0+ox"}
-  "ctypes-foreign" {= "0.23.0+ox"}
-  "dune"           {>= "3.17.0"}
+  "ctypes"                {= "0.23.0+ox"}
+  "ctypes-foreign"        {= "0.23.0+ox"}
+  "dune"                  {>= "3.17.0"}
 ]
-available: arch != "arm32" & arch != "x86_32"
+available: arch != "x86_32"
 synopsis: "Hardcaml Verilator Simulation Backend"
 description: "
 Very fast verilator-based simulations of Hardcaml circuits.

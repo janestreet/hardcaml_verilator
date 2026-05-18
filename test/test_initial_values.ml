@@ -30,7 +30,7 @@ let%expect_test "initial values" =
   in
   let circ = Circuit.create_exn ~name:"test" [ output "q" ports.(0) ] in
   let sim = Hardcaml_verilator.create ~clock_names:[ "clock" ] circ in
-  let waves, sim = Hardcaml_waveterm.Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   for _ = 0 to 1 do
     Cyclesim.cycle sim
   done;

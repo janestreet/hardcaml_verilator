@@ -71,7 +71,7 @@ let%expect_test "waveform with internal signals (state machine)" =
   let i = Cyclesim.inputs sim in
   let outputs_before = Cyclesim.outputs ~clock_edge:Before sim in
   let outputs_after = Cyclesim.outputs ~clock_edge:After sim in
-  let waveform, sim = Waveform.create sim in
+  let waveform, sim = Cyclesim.Waveform.create sim in
   i.clear := Bits.gnd;
   for _ = 1 to 12 do
     Cyclesim.cycle sim;

@@ -15,7 +15,7 @@ let test ~which_simulator ~extended_ports =
     | `Verilator ->
       Hardcaml_verilator.create ~clock_names:[] ~config:Cyclesim.Config.trace_all circuit
   in
-  let waves, sim = Hardcaml_waveterm.Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let testbench () =
     let i = Cyclesim.in_port sim (p "i") in
     let o = Cyclesim.out_port sim (p "o") in
@@ -66,16 +66,29 @@ let%expect_test "verilator with extended names" =
   test ~which_simulator:`Verilator ~extended_ports:false;
   [%expect
     {|
-    ((o 0) (x ()))
-    ((o 1) (x ()))
+    ((o 0) (x (0)))
+    ((o 1) (x (1)))
     ┌Signals────────┐┌Waves──────────────────────────────────────────────┐
     │i              ││────────┐                                          │
     │               ││        └───────                                   │
     │o              ││        ┌───────                                   │
     │               ││────────┘                                          │
-    │\x%x           ││        ┌───────                                   │
+    │x%x            ││        ┌───────                                   │
     │               ││────────┘                                          │
     └───────────────┘└───────────────────────────────────────────────────┘
     |}];
-  if false then test ~which_simulator:`Verilator ~extended_ports:true
+  test ~which_simulator:`Verilator ~extended_ports:true;
+  [%expect
+    {|
+    ((o 0) (x (0)))
+    ((o 1) (x (1)))
+    ┌Signals────────┐┌Waves──────────────────────────────────────────────┐
+    │i%i            ││────────┐                                          │
+    │               ││        └───────                                   │
+    │o%o            ││        ┌───────                                   │
+    │               ││────────┘                                          │
+    │x%x            ││        ┌───────                                   │
+    │               ││────────┘                                          │
+    └───────────────┘└───────────────────────────────────────────────────┘
+    |}]
 ;;

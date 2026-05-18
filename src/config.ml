@@ -47,7 +47,7 @@ let label t =
     ]
 ;;
 
-let executable _t = Hardcaml.Tools_config.verilator
+let executable _t = Hardcaml_tools_config.verilator
 
 let flag =
   [%map_open.Command
