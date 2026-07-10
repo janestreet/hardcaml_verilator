@@ -172,15 +172,11 @@ let with_tmp_stdout ~verbose ~f =
   Option.iter tmp_stdout ~f:Unix.unlink
 ;;
 
-let path_with_required_system_tools () =
-  let path = Sys.getenv "PATH" |> Option.value ~default:"" in
-  let tools =
-    [ "python3"; "ccache" ]
-    |> List.map ~f:(fun tool -> Filename.dirname tool)
-    |> String.concat ~sep:":"
-  in
-  [%string "%{path}:%{tools}"]
-;;
+(* [wrap_command_with_path_required_to_system_tools] is expected to be an identity
+   function in public release. The jane street internal version appends the $PATH variable
+   with path to some tools used in the verilator compilation.
+*)
+let wrap_command_with_path_required_to_system_tools command = command
 
 let run_command_exn ?(verbose = false) command =
   with_tmp_stdout ~verbose ~f:(fun tmp_stdout ->
@@ -190,8 +186,7 @@ let run_command_exn ?(verbose = false) command =
       | Some tmp_stdout -> [%string "%{command} &>%{tmp_stdout}"]
       | None -> command
     in
-    let path = path_with_required_system_tools () in
-    let command = [%string "PATH=\"%{path}\" %{command}"] in
+    let command = wrap_command_with_path_required_to_system_tools command in
     match Unix.system command with
     | Ok () -> ()
     | Error e ->
@@ -293,7 +288,11 @@ let generate_cpp_wrapper
           char *%{internal_addr_fn_name ~circuit_name}(%{typ} *ptr, char *p) {
             V%{circuit_name}_%{circuit_name} *%{circuit_name} = ptr->%{circuit_name};
             V%{circuit_name}__Syms* vlSymsp = %{circuit_name}->vlSymsp;
+#if VERILATOR_VERSION_INTEGER >= 5044000
+            VerilatedVar *var = vlSymsp->__Vscopep_%{circuit_name}->varFind(p);
+#else
             VerilatedVar *var = vlSymsp->__Vscope_%{circuit_name}.varFind(p);
+#endif
 
             if (var != NULL) {
               return (char *)var->datap();
